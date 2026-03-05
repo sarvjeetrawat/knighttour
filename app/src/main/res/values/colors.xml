@@ -1,0 +1,18 @@
+<resources>
+
+    <!-- Deep abyss background — matches AbyssBlack in Color.kt (#050508) -->
+    <color name="splash_background">#FF050508</color>
+
+    <!-- Slightly lighter for the icon container background -->
+    <color name="splash_icon_bg">#FF0D0D14</color>
+
+    <!-- Knight gold — matches KnightGold in Color.kt (#C8A84B) -->
+    <color name="knight_gold">#FFC8A84B</color>
+
+    <!-- Crown gold — matches CrownGold in Color.kt (#E8C96A) -->
+    <color name="crown_gold">#FFE8C96A</color>
+
+    <!-- Devil red — matches DevilRed in Color.kt (#C0392B) -->
+    <color name="devil_red">#FFC0392B</color>
+
+</resources>

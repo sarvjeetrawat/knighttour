@@ -1,0 +1,365 @@
+package com.kunpitech.knighttour.ui.screen.game
+
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.kunpitech.knighttour.domain.model.Difficulty
+import com.kunpitech.knighttour.domain.model.GameMode
+import com.kunpitech.knighttour.domain.model.GameSession
+import com.kunpitech.knighttour.domain.model.Position
+import com.kunpitech.knighttour.domain.model.SessionStatus
+import com.kunpitech.knighttour.domain.usecase.GetHintUseCase
+import com.kunpitech.knighttour.domain.usecase.MakeMoveUseCase
+import com.kunpitech.knighttour.domain.usecase.StartGameUseCase
+import com.kunpitech.knighttour.domain.usecase.TickTimerUseCase
+import com.kunpitech.knighttour.domain.usecase.UndoMoveUseCase
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+// ===============================================================
+//  GAME VIEWMODEL  (thin layer over domain UseCases)
+//
+//  Responsibilities:
+//    - Read nav args from SavedStateHandle
+//    - Drive the 1-second timer coroutine
+//    - Map domain GameSession to GameUiState
+//    - Forward events to the appropriate UseCase
+//    - Hold the shakeCell animation trigger
+//
+//  All game logic lives in domain/usecase/*.
+// ===============================================================
+
+@HiltViewModel
+class GameViewModel @Inject constructor(
+    private val savedStateHandle  : SavedStateHandle,
+    private val startGame         : StartGameUseCase,
+    private val makeMove          : MakeMoveUseCase,
+    private val undoMove          : UndoMoveUseCase,
+    private val getHint           : GetHintUseCase,
+    private val tickTimer         : TickTimerUseCase,
+    private val gameRepository    : com.kunpitech.knighttour.data.repository.GameRepository,
+    private val prefsRepository   : com.kunpitech.knighttour.data.repository.UserPreferencesRepository,
+) : ViewModel() {
+
+    private val _uiState: MutableStateFlow<GameUiState> =
+        MutableStateFlow(GameUiState())
+    val uiState: StateFlow<GameUiState> = _uiState.asStateFlow()
+
+    // Exposed so GameRoute can pass the real session ID to the Result screen
+    private val _currentSessionId = MutableStateFlow("")
+    val currentSessionId: StateFlow<String> = _currentSessionId.asStateFlow()
+
+    private var session: GameSession? = null
+    private var timerJob: Job? = null
+
+    init {
+        val sessionId = savedStateHandle.get<String>("sessionId") ?: ""
+        val diffStr   = savedStateHandle.get<String>("difficulty") ?: "MEDIUM"
+        val modeStr   = savedStateHandle.get<String>("gameMode")   ?: "OFFLINE"
+        val roomCode  = savedStateHandle.get<String>("roomCode")   ?: ""
+
+        val difficulty: Difficulty = Difficulty.entries
+            .find { it.name == diffStr } ?: Difficulty.MEDIUM
+        val mode: GameMode = GameMode.entries
+            .find { it.name == modeStr } ?: GameMode.OFFLINE
+
+        if (sessionId.isNotEmpty()) {
+            resumeSession(sessionId, difficulty, mode, roomCode)
+        } else {
+            newGame(difficulty, mode, roomCode)
+        }
+
+        // Observe DataStore preferences and apply live to game UI
+        viewModelScope.launch {
+            prefsRepository.preferences.collect { prefs ->
+                _uiState.update { state ->
+                    state.copy(
+                        boardTheme      = prefs.boardTheme.name,
+                        showMoveNumbers = prefs.showMoveNumbers,
+                        showValidMoves  = prefs.showValidMoves,
+                    )
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    //  PUBLIC EVENT HANDLER
+    // ============================================================
+
+    fun onEvent(event: GameEvent) {
+        when (event) {
+            is GameEvent.CellTapped -> handleCellTap(event.row, event.col)
+            GameEvent.Undo          -> handleUndo()
+            GameEvent.Hint          -> handleHint()
+            GameEvent.Pause         -> handlePause()
+            GameEvent.Resume        -> handleResume()
+            GameEvent.Restart       -> session?.let {
+                newGame(it.difficulty, it.mode, it.roomCode)
+            }
+        }
+    }
+
+    // ============================================================
+    //  GAME LIFECYCLE
+    // ============================================================
+
+    private fun newGame(difficulty: Difficulty, mode: GameMode, roomCode: String) {
+        timerJob?.cancel()
+        val s = startGame(difficulty, mode, roomCode)
+        session = s
+        _currentSessionId.value = s.id
+        _uiState.value = s.toUiState()
+        autoSave(s)
+        startTimer()
+    }
+
+    private fun resumeSession(
+        sessionId  : String,
+        difficulty : Difficulty,
+        mode       : GameMode,
+        roomCode   : String,
+    ) {
+        viewModelScope.launch {
+            val existing = gameRepository.getById(sessionId)
+            if (existing != null && !existing.isFinished) {
+                session = existing
+                _currentSessionId.value = existing.id
+                _uiState.value = existing.toUiState()
+                startTimer()
+            } else {
+                // Session not found or already finished — start fresh
+                newGame(difficulty, mode, roomCode)
+            }
+        }
+    }
+
+    // Auto-save session to Room after every meaningful state change
+    private fun autoSave(s: GameSession) {
+        viewModelScope.launch {
+            gameRepository.save(s)
+        }
+    }
+
+    // ============================================================
+    //  MOVE
+    // ============================================================
+
+    private fun handleCellTap(row: Int, col: Int) {
+        val current = session ?: return
+        if (_uiState.value.gameState == GamePhase.PAUSED) return
+
+        when (val result = makeMove(current, Position(row, col))) {
+            is MakeMoveUseCase.MoveResult.Accepted -> {
+                session = result.session
+                _uiState.value = result.session.toUiState()
+                autoSave(result.session)
+            }
+            is MakeMoveUseCase.MoveResult.Victory -> {
+                timerJob?.cancel()
+                session = result.session
+                _uiState.value = result.session.toUiState()
+                autoSave(result.session)
+            }
+            is MakeMoveUseCase.MoveResult.DeadEnd -> {
+                timerJob?.cancel()
+                session = result.session
+                _uiState.value = result.session.toUiState()
+                autoSave(result.session)
+            }
+            is MakeMoveUseCase.MoveResult.Invalid -> {
+                if (result.reason == MakeMoveUseCase.InvalidReason.NOT_L_MOVE) {
+                    triggerShake(row, col)
+                }
+            }
+            MakeMoveUseCase.MoveResult.GameOver -> Unit
+        }
+    }
+
+    private fun triggerShake(row: Int, col: Int) {
+        _uiState.update { it.copy(shakeCell = row to col) }
+        viewModelScope.launch {
+            delay(420)
+            _uiState.update { it.copy(shakeCell = null) }
+        }
+    }
+
+    // ============================================================
+    //  UNDO
+    // ============================================================
+
+    private fun handleUndo() {
+        val current = session ?: return
+        when (val result = undoMove(current)) {
+            is UndoMoveUseCase.UndoResult.Success -> {
+                session = result.session
+                _uiState.value = result.session.toUiState()
+            }
+            UndoMoveUseCase.UndoResult.NothingToUndo -> Unit
+            UndoMoveUseCase.UndoResult.GameOver      -> Unit
+        }
+    }
+
+    // ============================================================
+    //  HINT
+    // ============================================================
+
+    private fun handleHint() {
+        val current = session ?: return
+        when (val result = getHint(current)) {
+            is GetHintUseCase.HintResult.Success -> {
+                session = result.session
+                val hintPos = result.position
+                _uiState.update { state ->
+                    state.copy(
+                        cells = state.cells.map { cell ->
+                            cell.copy(
+                                isHint = cell.row == hintPos.row && cell.col == hintPos.col,
+                            )
+                        },
+                        hintsRemaining = current.difficulty.startingHints - result.session.hintsUsed,
+                        currentScore   = result.session.score,
+                    )
+                }
+            }
+            GetHintUseCase.HintResult.NoHintsLeft      -> Unit
+            GetHintUseCase.HintResult.NoKnight         -> Unit
+            GetHintUseCase.HintResult.NoMovesAvailable -> Unit
+            GetHintUseCase.HintResult.GameOver         -> Unit
+        }
+    }
+
+    // ============================================================
+    //  PAUSE / RESUME
+    // ============================================================
+
+    private fun handlePause() {
+        timerJob?.cancel()
+        _uiState.update { it.copy(gameState = GamePhase.PAUSED) }
+    }
+
+    private fun handleResume() {
+        _uiState.update { it.copy(gameState = GamePhase.PLAYING) }
+        startTimer()
+    }
+
+    // ============================================================
+    //  TIMER
+    // ============================================================
+
+    private fun startTimer() {
+        timerJob?.cancel()
+        timerJob = viewModelScope.launch {
+            while (true) {
+                delay(1000L)
+                val current: GameSession = session ?: break
+                if (_uiState.value.gameState != GamePhase.PLAYING) break
+
+                when (val tick = tickTimer(current)) {
+                    is TickTimerUseCase.TickResult.Tick -> {
+                        session = tick.session
+                        _uiState.update { state ->
+                            state.copy(
+                                elapsedSeconds = tick.session.elapsedSeconds,
+                                isTimerPanic   = tick.isTimerPanic,
+                                currentScore   = tick.session.score,
+                            )
+                        }
+                    }
+                    is TickTimerUseCase.TickResult.TimeUp -> {
+                        session = tick.session
+                        _uiState.update { it.copy(gameState = GamePhase.FAILED) }
+                        break
+                    }
+                    TickTimerUseCase.TickResult.GameOver -> break
+                }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        timerJob?.cancel()
+    }
+
+    // ============================================================
+    //  SESSION -> UI STATE MAPPING
+    // ============================================================
+
+    private fun GameSession.toUiState(): GameUiState {
+        val knightPos = board.knightPosition
+
+        // Compute valid moves from current knight position
+        val validSet: Set<Pair<Int, Int>> = if (knightPos != null) {
+            val offsets = listOf(-2 to -1, -2 to 1, -1 to -2, -1 to 2, 1 to -2, 1 to 2, 2 to -1, 2 to 1)
+            offsets
+                .map { (dr, dc) -> (knightPos.row + dr) to (knightPos.col + dc) }
+                .filter { (r, c) ->
+                    r in 0 until board.size &&
+                            c in 0 until board.size &&
+                            !board.cellAt(r, c).isVisited
+                }
+                .toSet()
+        } else emptySet()
+
+        val uiCells: List<CellState> = board.cells.map { cell ->
+            CellState(
+                row         = cell.row,
+                col         = cell.col,
+                isVisited   = cell.isVisited,
+                isKnight    = knightPos?.row == cell.row && knightPos?.col == cell.col,
+                isValidMove = (cell.row to cell.col) in validSet,
+                moveNumber  = cell.visitOrder,
+            )
+        }
+
+        val gamePhase: GamePhase = when (status) {
+            SessionStatus.IN_PROGRESS  -> GamePhase.PLAYING
+            SessionStatus.COMPLETED    -> GamePhase.COMPLETED
+            SessionStatus.FAILED_TIME,
+            SessionStatus.FAILED_STUCK,
+            SessionStatus.ABANDONED    -> GamePhase.FAILED
+        }
+
+        val gameModeUi: GameModeUi = when (mode) {
+            GameMode.OFFLINE -> GameModeUi.OFFLINE
+            GameMode.ONLINE  -> GameModeUi.ONLINE
+            GameMode.DEVIL   -> GameModeUi.DEVIL
+        }
+
+        val difficultyUi: DifficultyUi = when (difficulty) {
+            Difficulty.EASY   -> DifficultyUi.EASY
+            Difficulty.MEDIUM -> DifficultyUi.MEDIUM
+            Difficulty.HARD   -> DifficultyUi.HARD
+            Difficulty.DEVIL  -> DifficultyUi.DEVIL
+        }
+
+        return GameUiState(
+            boardSize        = board.size,
+            cells            = uiCells,
+            moveCount        = moveCount,
+            totalCells       = totalCells,
+            elapsedSeconds   = elapsedSeconds,
+            timeLimitSeconds = difficulty.timeLimitSeconds,
+            gameState        = gamePhase,
+            gameMode         = gameModeUi,
+            difficulty       = difficultyUi,
+            canUndo          = board.moveHistory.size > 1,
+            hintsRemaining   = difficulty.startingHints - hintsUsed,
+            currentScore     = score,
+            isOnlineMode     = mode == GameMode.ONLINE,
+            roomCode         = roomCode,
+            // Preserve preference values — never reset on game state updates
+            boardTheme       = _uiState.value.boardTheme,
+            showMoveNumbers  = _uiState.value.showMoveNumbers,
+            showValidMoves   = _uiState.value.showValidMoves,
+        )
+    }
+}

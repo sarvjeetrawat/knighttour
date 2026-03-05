@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Sample backup rules file; uncomment and customize as necessary.
+   See https://developer.android.com/guide/topics/data/autobackup
+   for details.
+   Note: This file is ignored for devices older than API 31
+   See https://developer.android.com/about/versions/12/backup-restore
+-->
+<full-backup-content>
+
+    <!-- Exclude Room database files — rebuilt on fresh install -->
+    <exclude
+        domain="database"
+        path="knight_tour.db" />
+    <exclude
+        domain="database"
+        path="knight_tour.db-shm" />
+    <exclude
+        domain="database"
+        path="knight_tour.db-wal" />
+
+    <!-- Include DataStore preferences (settings, player name, etc.) -->
+    <!-- DataStore files live in files/datastore/ — included by default -->
+
+</full-backup-content>

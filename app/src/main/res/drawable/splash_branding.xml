@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ═══════════════════════════════════════════════════════════════
+    SPLASH BRANDING VECTOR
+    File: app/src/main/res/drawable/splash_branding.xml
+
+    Shown at the bottom of the Android 12+ system splash screen
+    as the branding image. Renders "KNIGHT TOUR" text in gold.
+
+    Dimensions: 200dp × 24dp (Android recommends ≤200dp wide,
+    ≤80dp tall for branding images to avoid crop on small screens).
+    ═══════════════════════════════════════════════════════════════
+-->
+<vector
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="24dp"
+    android:viewportWidth="200"
+    android:viewportHeight="24">
+
+    <!-- "KNIGHT" text — drawn as a path approximation -->
+    <!-- K -->
+    <path
+        android:pathData="M8,4 L8,20 M8,12 L16,4 M8,12 L16,20"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <!-- N -->
+    <path
+        android:pathData="M20,20 L20,4 L28,20 L28,4"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <!-- I -->
+    <path
+        android:pathData="M32,4 L32,20"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"/>
+    <!-- G -->
+    <path
+        android:pathData="M44,8 A6,8 0 1 0 44,16 L44,12 L40,12"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <!-- H -->
+    <path
+        android:pathData="M48,4 L48,20 M48,12 L56,12 M56,4 L56,20"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <!-- T -->
+    <path
+        android:pathData="M58,4 L66,4 M62,4 L62,20"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <!-- Divider dot — drawn as a path (circle tag not valid in VectorDrawable) -->
+    <path
+        android:pathData="M74,10.5 A1.5,1.5 0 1 0 74,13.5 A1.5,1.5 0 1 0 74,10.5 Z"
+        android:fillColor="#C8A84B"/>
+
+    <!-- "TOUR" text -->
+    <!-- T -->
+    <path
+        android:pathData="M80,4 L88,4 M84,4 L84,20"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <!-- O -->
+    <path
+        android:pathData="M94,12 A6,8 0 1 0 94,11.9"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"/>
+    <!-- U -->
+    <path
+        android:pathData="M102,4 L102,16 A4,4 0 0 0 110,16 L110,4"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+    <!-- R -->
+    <path
+        android:pathData="M114,20 L114,4 L118,4 A4,4 0 0 1 118,12 L114,12 L120,20"
+        android:strokeColor="#C8A84B"
+        android:strokeWidth="2"
+        android:fillColor="@android:color/transparent"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+</vector>
