@@ -68,6 +68,21 @@ class SettingsViewModel @Inject constructor(
             SettingsEvent.SignOut               -> handleSignOut()
             SettingsEvent.ClearData             -> handleClearData()
             SettingsEvent.NavigateBack          -> Unit
+            // Player name edit dialog
+            SettingsEvent.EditPlayerName        -> _uiState.update {
+                it.copy(isEditingName = true, nameInputValue = it.playerName)
+            }
+            is SettingsEvent.NameInputChanged   -> _uiState.update {
+                it.copy(nameInputValue = event.value)
+            }
+            SettingsEvent.SavePlayerName        -> {
+                val name = _uiState.value.nameInputValue.trim().ifEmpty { "Knight" }
+                _uiState.update { it.copy(isEditingName = false) }
+                save { prefsRepository.setPlayerName(name) }
+            }
+            SettingsEvent.DismissNameDialog     -> _uiState.update {
+                it.copy(isEditingName = false)
+            }
         }
     }
 

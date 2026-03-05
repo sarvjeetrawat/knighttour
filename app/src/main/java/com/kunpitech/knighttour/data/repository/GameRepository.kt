@@ -50,6 +50,9 @@ interface GameRepository {
     /** Best score across all completed sessions. */
     suspend fun getGlobalPersonalBest(): Int?
 
+    /** Fastest completed game in seconds, or null if no wins yet. */
+    suspend fun getFastestWinSeconds(): Int?
+
     /** Delete a specific session (e.g. after user clears data). */
     suspend fun deleteById(id: String)
 
@@ -94,6 +97,9 @@ class GameRepositoryImpl @Inject constructor(
 
     override suspend fun getGlobalPersonalBest(): Int? =
         dao.getGlobalPersonalBest()
+
+    override suspend fun getFastestWinSeconds(): Int? =
+        dao.getFastestWinSeconds()
 
     override suspend fun deleteById(id: String) =
         dao.deleteById(id)

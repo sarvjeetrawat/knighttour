@@ -38,6 +38,10 @@ class HomeViewModel @Inject constructor(
         observePreferences()
         observeActiveGame()
         loadStats()
+        // Refresh stats whenever a game completes
+        gameRepository.getFinishedSessions(limit = 1)
+            .onEach { loadStats() }
+            .launchIn(viewModelScope)
     }
 
     fun onEvent(event: HomeEvent) {
@@ -90,6 +94,10 @@ class HomeViewModel @Inject constructor(
             val bestScore   = gameRepository.getGlobalPersonalBest() ?: 0
             val rankInfo    = scoreCalculator.rankInfo(bestScore)
             val winRate     = if (played > 0) (wins * 100) / played else 0
+            val fastestSecs = gameRepository.getFastestWinSeconds()
+            val bestTime    = if (fastestSecs != null) {
+                "%d:%02d".format(fastestSecs / 60, fastestSecs % 60)
+            } else "--:--"
 
             _uiState.update { state ->
                 state.copy(
@@ -97,6 +105,7 @@ class HomeViewModel @Inject constructor(
                     playerRank   = rankInfo.label,
                     gamesPlayed  = played,
                     winRate      = winRate,
+                    bestTime     = bestTime,
                 )
             }
         }

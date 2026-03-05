@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "1028387703873",
+    "firebase_url": "https://knight-tour-58864-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "knight-tour-58864",
+    "storage_bucket": "knight-tour-58864.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1028387703873:android:451f6bab10ed0b12f40ac0",
+        "android_client_info": {
+          "package_name": "com.kunpitech.knighttour"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCnDd4IeH_NsO-xCu9FD0o5lcYEEdX1h0Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

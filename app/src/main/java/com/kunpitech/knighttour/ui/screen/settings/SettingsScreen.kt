@@ -35,8 +35,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -122,6 +126,50 @@ fun SettingsScreen(
 
     // Confirm clear-data dialog state
     var showClearConfirm by remember { mutableStateOf(false) }
+
+    // Player name edit dialog
+    if (uiState.isEditingName) {
+        AlertDialog(
+            onDismissRequest = { onEvent(SettingsEvent.DismissNameDialog) },
+            containerColor   = Color(0xFF12121C),
+            titleContentColor = TextPrimary,
+            textContentColor  = TextSecondary,
+            title = {
+                Text(
+                    "RENAME",
+                    style = MaterialTheme.knightType.ScreenHeader,
+                    color = KnightGold,
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value         = uiState.nameInputValue,
+                    onValueChange = { onEvent(SettingsEvent.NameInputChanged(it.take(16))) },
+                    singleLine    = true,
+                    placeholder   = { Text("Enter name…", color = TextTertiary) },
+                    colors        = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor   = KnightGold,
+                        unfocusedBorderColor = BorderDefault,
+                        focusedTextColor     = TextPrimary,
+                        unfocusedTextColor   = TextSecondary,
+                        cursorColor          = KnightGold,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onEvent(SettingsEvent.SavePlayerName) }) {
+                    Text("SAVE", color = KnightGold,
+                        style = MaterialTheme.knightType.ButtonSecondary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { onEvent(SettingsEvent.DismissNameDialog) }) {
+                    Text("CANCEL", color = TextTertiary,
+                        style = MaterialTheme.knightType.ButtonSecondary)
+                }
+            },
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -430,15 +478,30 @@ private fun AccountCard(
             )
         }
 
-        // Name + status
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        // Name + status — tap to edit name
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clickable { onEvent(SettingsEvent.EditPlayerName) },
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Row(
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text  = uiState.playerName,
+                    style = MaterialTheme.knightType.CardTitle.copy(fontSize = 16.sp),
+                    color = if (uiState.isSignedIn) TextPrimary else TextSecondary,
+                )
+                Text(
+                    text  = "✎",
+                    fontSize = 11.sp,
+                    color = KnightGold.copy(alpha = 0.6f),
+                )
+            }
             Text(
-                text  = uiState.playerName,
-                style = MaterialTheme.knightType.CardTitle.copy(fontSize = 16.sp),
-                color = if (uiState.isSignedIn) TextPrimary else TextSecondary,
-            )
-            Text(
-                text  = if (uiState.isSignedIn) "SIGNED IN" else "PLAYING OFFLINE",
+                text  = if (uiState.isSignedIn) "SIGNED IN" else "TAP TO RENAME",
                 style = MaterialTheme.knightType.BadgeText,
                 color = if (uiState.isSignedIn) VictoryGreen else TextTertiary,
             )

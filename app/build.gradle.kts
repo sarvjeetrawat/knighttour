@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.google.gms.google.services)
 }
 
 hilt {
@@ -64,6 +65,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.junit.jupiter)
+    implementation(libs.firebase.database)
     /* testImplementation(libs.junit)
      androidTestImplementation(libs.androidx.junit)*/
    /* androidTestImplementation(libs.androidx.espresso.core)*/

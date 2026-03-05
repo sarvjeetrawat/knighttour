@@ -117,4 +117,13 @@ interface GameSessionDao {
 
     @Query("SELECT MAX(score) FROM game_sessions WHERE status = 'COMPLETED'")
     suspend fun getGlobalPersonalBest(): Int?
+
+    /**
+     * Fastest completed game (lowest elapsedSeconds among victories).
+     */
+    @Query("""
+        SELECT MIN(elapsedSeconds) FROM game_sessions
+        WHERE status = 'COMPLETED'
+    """)
+    suspend fun getFastestWinSeconds(): Int?
 }

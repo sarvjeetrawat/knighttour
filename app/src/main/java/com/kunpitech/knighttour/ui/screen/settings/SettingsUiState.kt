@@ -25,7 +25,11 @@ data class SettingsUiState(
 
     // State
     val isLoading         : Boolean         = false,
-    val savedFeedback     : Boolean         = false,   // brief "saved" flash
+    val savedFeedback     : Boolean         = false,
+
+    // Player name edit dialog
+    val isEditingName     : Boolean         = false,
+    val nameInputValue    : String          = "",
 )
 
 enum class DefaultDiff(val label: String) {
@@ -55,4 +59,8 @@ sealed interface SettingsEvent {
     data object SignIn                                    : SettingsEvent
     data object SignOut                                   : SettingsEvent
     data object ClearData                                 : SettingsEvent
+    data object EditPlayerName                            : SettingsEvent
+    data class  NameInputChanged(val value: String)      : SettingsEvent
+    data object SavePlayerName                            : SettingsEvent
+    data object DismissNameDialog                         : SettingsEvent
 }
