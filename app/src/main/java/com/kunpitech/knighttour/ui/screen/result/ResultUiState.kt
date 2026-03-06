@@ -57,6 +57,7 @@ enum class RematchState { IDLE, WAITING, STARTING }
 sealed interface ResultEvent {
     data object PlayAgain       : ResultEvent
     data object GoHome          : ResultEvent
+    data object ExitGame        : ResultEvent   // online only — disconnect and go home
     data object OpenLeaderboard : ResultEvent
     data object ShareResult     : ResultEvent
 }

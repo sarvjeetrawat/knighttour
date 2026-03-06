@@ -423,29 +423,48 @@ class FirebaseGameRepository @Inject constructor() {
      * Observe all rooms with status = WAITING.
      * Used by the lobby room browser to show joinable rooms in real time.
      */
-    fun observeWaitingRooms(): Flow<List<RoomBrowserEntry>> = callbackFlow {
-        val ref = db.getReference("rooms")
+    fun observeWaitingRooms(myName: String = ""): Flow<List<RoomBrowserEntry>> = callbackFlow {
+        val ref   = db.getReference("rooms")
+        val ttlMs = 15 * 60 * 1000L  // 15 min — rooms older than this are abandoned
+
         val listener = object : ValueEventListener {
             override fun onDataChange(snap: DataSnapshot) {
+                val now = System.currentTimeMillis()
                 val rooms = snap.children.mapNotNull { roomSnap ->
                     val status = roomSnap.child("status").getValue(String::class.java)
                     if (status != "WAITING") return@mapNotNull null
+
                     val hostName  = roomSnap.child("host/name").getValue(String::class.java) ?: return@mapNotNull null
                     if (hostName.isEmpty()) return@mapNotNull null
-                    val roomCode  = roomSnap.key ?: return@mapNotNull null
-                    val boardSize = roomSnap.child("boardSize").getValue(Int::class.java) ?: 6
-                    val createdAt = roomSnap.child("createdAt").getValue(Long::class.java) ?: 0L
+
+                    val roomCode       = roomSnap.key ?: return@mapNotNull null
+                    val boardSize      = roomSnap.child("boardSize").getValue(Int::class.java) ?: 6
+                    val createdAt      = roomSnap.child("createdAt").getValue(Long::class.java) ?: 0L
+                    val isConnected    = roomSnap.child("host/isConnected").getValue(Boolean::class.java) ?: false
+                    val isExpired      = (now - createdAt) > ttlMs
+
+                    // Auto-delete: disconnected AND expired = abandoned room, clean it up
+                    if (!isConnected && isExpired) {
+                        roomSnap.ref.removeValue()
+                        return@mapNotNull null
+                    }
+
                     RoomBrowserEntry(
-                        roomCode  = roomCode,
-                        hostName  = hostName,
-                        boardSize = boardSize,
-                        createdAt = createdAt,
+                        roomCode        = roomCode,
+                        hostName        = hostName,
+                        boardSize       = boardSize,
+                        createdAt       = createdAt,
+                        isHostConnected = isConnected,
+                        isOwn           = hostName == myName,
                     )
-                }.sortedByDescending { it.createdAt }
+                }.sortedWith(
+                    // Own room pinned to top, then newest first
+                    compareByDescending<RoomBrowserEntry> { it.isOwn }
+                        .thenByDescending { it.createdAt }
+                )
                 trySend(rooms)
             }
             override fun onCancelled(error: DatabaseError) {
-                // Permission denied or other error — emit empty list, do NOT crash
                 trySend(emptyList())
             }
         }
@@ -454,6 +473,7 @@ class FirebaseGameRepository @Inject constructor() {
     }
 
     /**
+
      * Fetch all rooms that contain a player with the given name (as host or guest).
      * Used by leaderboard to find opponent scores.
      */
@@ -693,10 +713,12 @@ data class MatchResult(
 )
 
 data class RoomBrowserEntry(
-    val roomCode  : String,
-    val hostName  : String,
-    val boardSize : Int,
-    val createdAt : Long,
+    val roomCode       : String,
+    val hostName       : String,
+    val boardSize      : Int,
+    val createdAt      : Long,
+    val isHostConnected: Boolean = true,   // false = host disconnected/abandoned
+    val isOwn          : Boolean = false,  // true = this is my own room
 )
 
 data class FirebaseScoreEntry(

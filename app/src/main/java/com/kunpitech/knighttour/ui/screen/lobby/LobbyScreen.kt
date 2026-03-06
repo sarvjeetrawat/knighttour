@@ -590,10 +590,22 @@ private fun RoomCard(
     onJoin  : () -> Unit,
     enabled : Boolean,
 ) {
+    val isDisconnected = !room.isHostConnected
+    val dotColor = when {
+        room.isOwn     -> Color(0xFFD4A843)          // gold for own room
+        isDisconnected -> Color(0xFFE05050)           // red for disconnected
+        else           -> OnlineTeal                  // teal for active
+    }
+    val borderColor = when {
+        room.isOwn     -> Color(0xFFD4A843).copy(alpha = 0.4f)
+        isDisconnected -> Color(0xFFE05050).copy(alpha = 0.25f)
+        else           -> OnlineTeal.copy(alpha = 0.25f)
+    }
+
     val pulse by rememberInfiniteTransition(label = "live")
         .animateFloat(
-            initialValue  = 0.4f,
-            targetValue   = 1f,
+            initialValue  = if (isDisconnected) 0.3f else 0.4f,
+            targetValue   = if (isDisconnected) 0.3f else 1f,   // no pulse when disconnected
             animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
             label         = "live",
         )
@@ -601,18 +613,21 @@ private fun RoomCard(
     val waitingSince = remember(room.createdAt) {
         val diff = System.currentTimeMillis() - room.createdAt
         when {
-            diff < 60_000  -> "just now"
+            diff < 60_000    -> "just now"
             diff < 3_600_000 -> "${diff / 60_000}m ago"
-            else           -> "${diff / 3_600_000}h ago"
+            else             -> "${diff / 3_600_000}h ago"
         }
     }
+
+    // Own room is not joinable — you're already hosting it
+    val canJoin = enabled && !room.isOwn && !isDisconnected
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(SurfaceElevated, KnightTourShapes.medium)
-            .border(BorderWidth.thin, OnlineTeal.copy(alpha = 0.25f), KnightTourShapes.medium)
-            .clickable(enabled = enabled) { onJoin() }
+            .border(BorderWidth.thin, borderColor, KnightTourShapes.medium)
+            .then(if (canJoin) Modifier.clickable { onJoin() } else Modifier)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment     = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -620,62 +635,109 @@ private fun RoomCard(
         Row(
             verticalAlignment     = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier              = Modifier.weight(1f),
         ) {
-            // Pulsing live indicator
+            // Status dot
             Box(
                 modifier = Modifier
                     .size(8.dp)
-                    .background(OnlineTeal.copy(alpha = pulse), CircleShape)
+                    .background(dotColor.copy(alpha = pulse), CircleShape)
             )
 
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text  = room.hostName,
-                    style = MaterialTheme.knightType.CardTitle,
-                    color = TextPrimary,
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment     = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text  = room.hostName,
+                        style = MaterialTheme.knightType.CardTitle,
+                        color = if (isDisconnected) TextTertiary else TextPrimary,
+                    )
+                    // "YOU" badge on own room
+                    if (room.isOwn) {
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFFD4A843).copy(alpha = 0.15f), KnightTourShapes.extraSmall)
+                                .padding(horizontal = 6.dp, vertical = 1.dp),
+                        ) {
+                            Text(
+                                text  = "YOUR ROOM",
+                                style = MaterialTheme.knightType.StatLabel.copy(fontSize = 9.sp),
+                                color = Color(0xFFD4A843),
+                            )
+                        }
+                    }
+                }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment     = Alignment.CenterVertically,
                 ) {
                     Box(
                         modifier = Modifier
-                            .background(OnlineTeal.copy(alpha = 0.12f), KnightTourShapes.extraSmall)
+                            .background(dotColor.copy(alpha = 0.12f), KnightTourShapes.extraSmall)
                             .padding(horizontal = 8.dp, vertical = 2.dp),
                     ) {
                         Text(
                             text  = "${room.boardSize}×${room.boardSize}",
                             style = MaterialTheme.knightType.DifficultyChip,
-                            color = OnlineTeal,
+                            color = dotColor,
                         )
                     }
                     Text(
-                        text  = waitingSince,
+                        text  = if (isDisconnected) "⚠ host left" else waitingSince,
                         style = MaterialTheme.knightType.StatLabel,
-                        color = TextTertiary,
+                        color = if (isDisconnected) Color(0xFFE05050).copy(alpha = 0.7f) else TextTertiary,
                     )
                 }
             }
         }
 
-        Box(
-            modifier = Modifier
-                .background(
-                    if (enabled) OnlineTeal.copy(alpha = 0.15f) else Color.Transparent,
-                    KnightTourShapes.small,
+        // Action badge — right side
+        when {
+            room.isOwn -> Box(
+                modifier = Modifier
+                    .background(Color(0xFFD4A843).copy(alpha = 0.1f), KnightTourShapes.small)
+                    .border(BorderWidth.default, Color(0xFFD4A843).copy(alpha = 0.4f), KnightTourShapes.small)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text  = "WAITING",
+                    style = MaterialTheme.knightType.ButtonPrimary.copy(fontSize = 11.sp),
+                    color = Color(0xFFD4A843),
                 )
-                .border(
-                    BorderWidth.default,
-                    if (enabled) OnlineTeal.copy(alpha = 0.7f) else BorderDefault,
-                    KnightTourShapes.small,
+            }
+            isDisconnected -> Box(
+                modifier = Modifier
+                    .background(Color.Transparent, KnightTourShapes.small)
+                    .border(BorderWidth.default, BorderDefault, KnightTourShapes.small)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text  = "GONE",
+                    style = MaterialTheme.knightType.ButtonPrimary.copy(fontSize = 11.sp),
+                    color = TextTertiary,
                 )
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            Text(
-                text  = if (enabled) "JOIN →" else "...",
-                style = MaterialTheme.knightType.ButtonPrimary.copy(fontSize = 12.sp),
-                color = if (enabled) OnlineTeal else TextTertiary,
-            )
+            }
+            else -> Box(
+                modifier = Modifier
+                    .background(
+                        if (canJoin) OnlineTeal.copy(alpha = 0.15f) else Color.Transparent,
+                        KnightTourShapes.small,
+                    )
+                    .border(
+                        BorderWidth.default,
+                        if (canJoin) OnlineTeal.copy(alpha = 0.7f) else BorderDefault,
+                        KnightTourShapes.small,
+                    )
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text  = if (canJoin) "JOIN →" else "...",
+                    style = MaterialTheme.knightType.ButtonPrimary.copy(fontSize = 12.sp),
+                    color = if (canJoin) OnlineTeal else TextTertiary,
+                )
+            }
         }
     }
 }

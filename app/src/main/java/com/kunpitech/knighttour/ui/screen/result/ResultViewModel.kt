@@ -128,6 +128,28 @@ class ResultViewModel @Inject constructor(
                     isNewPB      = isNewPB,
                 )
             }
+
+            // ── Watch for opponent disconnecting (they hit Exit Game) ─
+            if (isOnline && roomCode.isNotEmpty()) {
+                observeOpponentPresence(roomCode, localRole)
+            }
+        }
+    }
+
+    /**
+     * If the opponent disconnects from the result screen, reset rematch state
+     * so the local player's "WAITING FOR..." button returns to "PLAY AGAIN".
+     */
+    private fun observeOpponentPresence(roomCode: String, localRole: String) {
+        val opponentRole = if (localRole == "host") "guest" else "host"
+        viewModelScope.launch {
+            firebaseRepo.observeOpponent(roomCode, opponentRole)
+                .collect { state ->
+                    if (!state.isConnected) {
+                        // Opponent left — cancel any pending rematch wait
+                        _uiState.update { it.copy(rematchState = RematchState.IDLE) }
+                    }
+                }
         }
     }
 
@@ -340,6 +362,38 @@ class ResultViewModel @Inject constructor(
             } catch (e: Exception) {
                 _uiState.update { it.copy(rematchState = RematchState.IDLE) }
             }
+        }
+    }
+
+    /**
+     * Player chose not to rematch — disconnect cleanly from Firebase.
+     * Cancels any pending rematch signal so the opponent's button resets.
+     * Host deletes the room; guest just marks themselves disconnected.
+     */
+    fun exitGame(onDone: () -> Unit) {
+        val state = _uiState.value
+        if (!state.isOnlineMode || state.roomCode.isEmpty()) {
+            onDone()
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val roomCode = state.roomCode
+                val role     = state.localRole
+                val isHost   = role == "host"
+
+                // Cancel pending rematch signal so opponent's "WAITING" button resets
+                firebaseRepo.clearRematch(roomCode)
+
+                // Mark this player as disconnected in the room
+                firebaseRepo.setConnected(roomCode, role, false)
+
+                // Host cleans up the room entirely so it vanishes from the browser
+                if (isHost) {
+                    firebaseRepo.deleteRoom(roomCode)
+                }
+            } catch (_: Exception) {}
+            onDone()
         }
     }
 }

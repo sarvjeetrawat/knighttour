@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -875,9 +876,10 @@ private fun ActionButtons(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         // Primary: Play Again
-        val rematchState = uiState.rematchState
-        val isWaiting    = rematchState == RematchState.WAITING
-        val opponentName = uiState.opponentName.ifEmpty { "Opponent" }
+        val rematchState    = uiState.rematchState
+        val isWaiting       = rematchState == RematchState.WAITING
+        val isStarting      = rematchState == RematchState.STARTING
+        val opponentName    = uiState.opponentName.ifEmpty { "Opponent" }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -889,60 +891,109 @@ private fun ActionButtons(
                     KnightTourShapes.medium,
                 )
                 .border(BorderWidth.default, accentColor.copy(alpha = if (isWaiting) 0.3f else 0.55f), KnightTourShapes.medium)
-                .clickable(enabled = !isWaiting && rematchState != RematchState.STARTING) {
+                .clickable(enabled = !isWaiting && !isStarting) {
                     onEvent(ResultEvent.PlayAgain)
                 },
             contentAlignment = Alignment.Center,
         ) {
-            if (isWaiting) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            when {
+                isStarting -> {
+                    // Both agreed — about to navigate
+                    Row(
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier    = Modifier.size(14.dp),
+                            color       = accentColor,
+                            strokeWidth = 2.dp,
+                        )
+                        Text(
+                            text  = "STARTING REMATCH...",
+                            style = MaterialTheme.knightType.ButtonPrimary,
+                            color = accentColor,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+                isWaiting -> {
+                    // Waiting for opponent to also tap Play Again
                     val pulse by rememberInfiniteTransition(label = "rematch")
                         .animateFloat(
-                            initialValue  = 0.5f,
+                            initialValue  = 0.4f,
                             targetValue   = 1f,
                             animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
                             label         = "rematch",
                         )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text  = "WAITING FOR ${opponentName.uppercase()}...",
+                            style = MaterialTheme.knightType.ButtonPrimary,
+                            color = accentColor.copy(alpha = pulse),
+                            fontSize = 12.sp,
+                        )
+                        Text(
+                            text  = "Waiting for them to tap Play Again",
+                            color = accentColor.copy(alpha = 0.45f),
+                            fontSize = 10.sp,
+                        )
+                    }
+                }
+                else -> {
                     Text(
-                        text  = "WAITING FOR $opponentName...",
+                        text  = "PLAY AGAIN",
                         style = MaterialTheme.knightType.ButtonPrimary,
-                        color = accentColor.copy(alpha = pulse),
-                        fontSize = 12.sp,
-                    )
-                    Text(
-                        text  = "Tap Play Again to rematch",
-                        color = accentColor.copy(alpha = 0.5f),
-                        fontSize = 10.sp,
+                        color = accentColor,
                     )
                 }
-            } else {
-                Text(
-                    text  = "PLAY AGAIN",
-                    style = MaterialTheme.knightType.ButtonPrimary,
-                    color = accentColor,
-                )
             }
         }
 
-        // Secondary row: Home + Leaderboard
+        // Secondary row: Home/Exit + Leaderboard
         Row(
             modifier              = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp)
-                    .background(SurfaceDark, KnightTourShapes.medium)
-                    .border(BorderWidth.thin, BorderDefault, KnightTourShapes.medium)
-                    .clickable { onEvent(ResultEvent.GoHome) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text  = "HOME",
-                    style = MaterialTheme.knightType.ButtonSecondary,
-                    color = TextSecondary,
-                )
+            if (uiState.isOnlineMode) {
+                // Online: EXIT GAME disconnects cleanly from Firebase
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .background(SurfaceDark, KnightTourShapes.medium)
+                        .border(BorderWidth.thin, Color(0xFFE05050).copy(alpha = 0.4f), KnightTourShapes.medium)
+                        .clickable { onEvent(ResultEvent.ExitGame) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text("✕", fontSize = 13.sp, color = Color(0xFFE05050).copy(alpha = 0.8f))
+                        Text(
+                            text  = "EXIT GAME",
+                            style = MaterialTheme.knightType.ButtonSecondary,
+                            color = Color(0xFFE05050).copy(alpha = 0.8f),
+                        )
+                    }
+                }
+            } else {
+                // Offline: plain HOME button
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .background(SurfaceDark, KnightTourShapes.medium)
+                        .border(BorderWidth.thin, BorderDefault, KnightTourShapes.medium)
+                        .clickable { onEvent(ResultEvent.GoHome) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text  = "HOME",
+                        style = MaterialTheme.knightType.ButtonSecondary,
+                        color = TextSecondary,
+                    )
+                }
             }
             Box(
                 modifier = Modifier
@@ -999,7 +1050,7 @@ private fun ActionButtons(
 @Composable
 fun ResultRoute(
     onPlayAgainOffline : () -> Unit,
-    onStartRematch     : (roomCode: String) -> Unit,   // replaces onPlayAgainOnline
+    onStartRematch     : (roomCode: String) -> Unit,
     onGoHome           : () -> Unit,
     onOpenLeaderboard  : () -> Unit,
     viewModel          : ResultViewModel = hiltViewModel(),
@@ -1019,6 +1070,7 @@ fun ResultRoute(
                         onPlayAgainOffline()
                     }
                 }
+                ResultEvent.ExitGame        -> viewModel.exitGame { onGoHome() }
                 ResultEvent.GoHome          -> onGoHome()
                 ResultEvent.OpenLeaderboard -> onOpenLeaderboard()
                 ResultEvent.ShareResult     -> { /* TODO: Android share sheet */ }
