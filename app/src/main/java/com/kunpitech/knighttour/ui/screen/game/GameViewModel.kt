@@ -73,6 +73,7 @@ class GameViewModel @Inject constructor(
         val diffStr   = savedStateHandle.get<String>("difficulty") ?: "MEDIUM"
         val modeStr   = savedStateHandle.get<String>("gameMode")   ?: "OFFLINE"
         val roomCode  = savedStateHandle.get<String>("roomCode")   ?: ""
+        val isRematch = savedStateHandle.get<Boolean>("isRematch") ?: false
 
         val mode: GameMode = GameMode.entries
             .find { it.name == modeStr } ?: GameMode.OFFLINE
@@ -111,12 +112,21 @@ class GameViewModel @Inject constructor(
 
         // Online: observe opponent state from Firebase
         if (mode == GameMode.ONLINE) {
-            // Both host and guest start paused — GameStarted/OpponentJoined triggers play
-            _uiState.update { it.copy(
-                waitingForOpponent = true,
-                gameState = GamePhase.PAUSED,
-            ) }
-            // Re-start opponent observation in THIS scope — lobby scope may be cancelled
+            if (isRematch) {
+                // Room already set up — guest skips waiting, host shows simple rejoin message
+                val isHost = sessionManager.localRole() == OnlineRole.HOST
+                _uiState.update { it.copy(
+                    waitingForOpponent = isHost,   // host still waits briefly for guest to rejoin
+                    gameState          = GamePhase.PAUSED,
+                    isRematch          = true,
+                ) }
+            } else {
+                _uiState.update { it.copy(
+                    waitingForOpponent = true,
+                    gameState          = GamePhase.PAUSED,
+                    isRematch          = false,
+                ) }
+            }
             sessionManager.startObservingOpponent(viewModelScope)
             observeOnlineOpponent()
             observeRoomEvents()
@@ -477,12 +487,12 @@ class GameViewModel @Inject constructor(
                                         )
                                         sessionManager.endSession()
                                     }
-                                    _uiState.update { it.copy(gameState = GamePhase.OPPONENT_FINISHED) }
+                                    _uiState.update { it.copy(gameState = GamePhase.ONLINE_GAME_OVER) }
                                 }
                                 GamePhase.WAITING_FOR_OPPONENT -> {
                                     // We were stuck waiting — opponent won, navigate now
                                     viewModelScope.launch { sessionManager.endSession() }
-                                    _uiState.update { it.copy(gameState = GamePhase.OPPONENT_FINISHED) }
+                                    _uiState.update { it.copy(gameState = GamePhase.ONLINE_GAME_OVER) }
                                 }
                                 else -> Unit
                             }
@@ -496,7 +506,7 @@ class GameViewModel @Inject constructor(
                                 GamePhase.WAITING_FOR_OPPONENT -> {
                                     // Both stuck — both done, navigate to result
                                     viewModelScope.launch { sessionManager.endSession() }
-                                    _uiState.update { it.copy(gameState = GamePhase.FAILED) }
+                                    _uiState.update { it.copy(gameState = GamePhase.ONLINE_GAME_OVER) }
                                 }
                                 else -> Unit
                             }
@@ -516,11 +526,11 @@ class GameViewModel @Inject constructor(
                                     )
                                     sessionManager.endSession()
                                 }
-                                _uiState.update { it.copy(gameState = GamePhase.OPPONENT_FINISHED) }
+                                _uiState.update { it.copy(gameState = GamePhase.ONLINE_GAME_OVER) }
                             }
                             GamePhase.WAITING_FOR_OPPONENT -> {
                                 viewModelScope.launch { sessionManager.endSession() }
-                                _uiState.update { it.copy(gameState = GamePhase.FAILED) }
+                                _uiState.update { it.copy(gameState = GamePhase.ONLINE_GAME_OVER) }
                             }
                             else -> Unit
                         }

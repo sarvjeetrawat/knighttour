@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -97,6 +98,7 @@ class ResultViewModel @Inject constructor(
 
             // Show result immediately with whatever opponent score we have
             val initialOpponentScore = last?.opponentFinalScore ?: 0
+            val localName = last?.localName ?: ""
             _uiState.value = buildState(
                 session       = session,
                 breakdown     = breakdown,
@@ -107,6 +109,9 @@ class ResultViewModel @Inject constructor(
                 opponentName  = opponentName,
                 opponentScore = initialOpponentScore,
                 myScore       = myScore,
+                roomCode      = roomCode,
+                localRole     = localRole,
+                localName     = localName,
             )
 
             // ── For online: observe opponent node until score arrives ─
@@ -133,6 +138,7 @@ class ResultViewModel @Inject constructor(
     private fun observeOpponentScore(
         roomCode     : String,
         localRole    : String,
+        localName    : String = "",
         myScore      : Int,
         opponentName : String,
         session      : GameSession,
@@ -157,6 +163,9 @@ class ResultViewModel @Inject constructor(
                             opponentName  = opponentName,
                             opponentScore = opponentScore,
                             myScore       = myScore,
+                            roomCode      = roomCode,
+                            localRole     = localRole,
+                            localName     = localName,
                         )
                         return@collect
                     }
@@ -177,13 +186,16 @@ class ResultViewModel @Inject constructor(
         opponentName  : String,
         opponentScore : Int,
         myScore       : Int,
+        roomCode      : String = "",
+        localRole     : String = "",
+        localName     : String = "",
     ): ResultUiState {
         val didWinOnline = when {
             !isOnline          -> false
-            opponentScore == 0 -> isVictory   // opponent didn't finish — win only if we completed
+            opponentScore == 0 -> isVictory
             myScore > opponentScore -> true
             myScore < opponentScore -> false
-            else               -> isVictory   // tie: board completion wins
+            else               -> isVictory
         }
         return ResultUiState(
             isVictory         = isVictory,
@@ -208,6 +220,9 @@ class ResultViewModel @Inject constructor(
             opponentName      = opponentName,
             opponentScore     = opponentScore,
             didWinOnline      = didWinOnline,
+            roomCode          = roomCode,
+            localRole         = localRole,
+            localName         = localName,
             isLoading         = false,
         )
     }
@@ -254,5 +269,77 @@ class ResultViewModel @Inject constructor(
             rankProgress     = rankInfo.progressFrac,
             isLoading        = false,
         )
+    }
+
+    // ── Rematch ──────────────────────────────────────────────────
+
+    /** Called when the local player taps Play Again in online mode. */
+    fun requestRematch(onStartRematch: (roomCode: String, isHost: Boolean) -> Unit) {
+        val state = _uiState.value
+        if (!state.isOnlineMode || state.roomCode.isEmpty()) return
+        if (state.rematchState != RematchState.IDLE) return
+
+        val isHost   = state.localRole == "host"
+        val roomCode = state.roomCode
+
+        _uiState.update { it.copy(rematchState = RematchState.WAITING) }
+
+        viewModelScope.launch {
+            try {
+                // Step 1: Signal we're ready
+                firebaseRepo.signalRematch(roomCode, state.localRole)
+
+                if (isHost) {
+                    // Step 2 (Host): Wait for guest to also signal, then reset room
+                    firebaseRepo.observeRematch(roomCode)
+                        .collect {
+                            _uiState.update { it.copy(rematchState = RematchState.STARTING) }
+
+                            // Reset room FIRST — room goes back to WAITING
+                            firebaseRepo.resetRoomForRematch(
+                                roomCode  = roomCode,
+                                hostId    = sessionManager.currentSession()?.localId ?: "",
+                                hostName  = state.localName,
+                                guestName = state.opponentName,
+                                boardSize = state.boardSize,
+                            )
+                            // Signal guest that room is ready to join
+                            firebaseRepo.signalRoomReady(roomCode)
+
+                            // Host sets up session
+                            sessionManager.createRoom(
+                                roomCode  = roomCode,
+                                localName = state.localName,
+                                boardSize = state.boardSize,
+                                scope     = viewModelScope,
+                            )
+                            onStartRematch(roomCode, true)
+                            return@collect
+                        }
+                } else {
+                    // Step 2 (Guest): Wait for host to reset room and mark it ready
+                    firebaseRepo.observeRoomReady(roomCode)
+                        .collect { ready ->
+                            if (!ready) return@collect
+                            _uiState.update { it.copy(rematchState = RematchState.STARTING) }
+
+                            // Room is now in WAITING state — safe to join
+                            val joined = sessionManager.joinRoom(
+                                roomCode  = roomCode,
+                                localName = state.localName,
+                                scope     = viewModelScope,
+                            )
+                            if (joined) {
+                                onStartRematch(roomCode, false)
+                            } else {
+                                _uiState.update { it.copy(rematchState = RematchState.IDLE) }
+                            }
+                            return@collect
+                        }
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(rematchState = RematchState.IDLE) }
+            }
+        }
     }
 }

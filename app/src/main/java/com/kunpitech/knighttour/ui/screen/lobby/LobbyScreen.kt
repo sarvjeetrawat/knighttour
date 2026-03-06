@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -37,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -161,9 +163,9 @@ fun LobbyScreen(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 listOf(
+                    LobbyTab.BROWSE to "⊞ BROWSE",
                     LobbyTab.CREATE to "✚ CREATE",
                     LobbyTab.JOIN   to "→ JOIN",
-                    LobbyTab.BROWSE to "⊞ BROWSE",
                 ).forEach { (tab, label) ->
                     val selected = uiState.tab == tab
                     Box(
@@ -588,41 +590,71 @@ private fun RoomCard(
     onJoin  : () -> Unit,
     enabled : Boolean,
 ) {
+    val pulse by rememberInfiniteTransition(label = "live")
+        .animateFloat(
+            initialValue  = 0.4f,
+            targetValue   = 1f,
+            animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+            label         = "live",
+        )
+
+    val waitingSince = remember(room.createdAt) {
+        val diff = System.currentTimeMillis() - room.createdAt
+        when {
+            diff < 60_000  -> "just now"
+            diff < 3_600_000 -> "${diff / 60_000}m ago"
+            else           -> "${diff / 3_600_000}h ago"
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(SurfaceElevated, KnightTourShapes.medium)
             .border(BorderWidth.thin, OnlineTeal.copy(alpha = 0.25f), KnightTourShapes.medium)
+            .clickable(enabled = enabled) { onJoin() }
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment     = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                text  = room.hostName,
-                style = MaterialTheme.knightType.CardTitle,
-                color = TextPrimary,
+        Row(
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Pulsing live indicator
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(OnlineTeal.copy(alpha = pulse), CircleShape)
             )
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment     = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .background(OnlineTeal.copy(alpha = 0.12f), KnightTourShapes.extraSmall)
-                        .padding(horizontal = 8.dp, vertical = 2.dp),
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text  = room.hostName,
+                    style = MaterialTheme.knightType.CardTitle,
+                    color = TextPrimary,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment     = Alignment.CenterVertically,
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .background(OnlineTeal.copy(alpha = 0.12f), KnightTourShapes.extraSmall)
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text  = "${room.boardSize}×${room.boardSize}",
+                            style = MaterialTheme.knightType.DifficultyChip,
+                            color = OnlineTeal,
+                        )
+                    }
                     Text(
-                        text  = "${room.boardSize}×${room.boardSize}",
-                        style = MaterialTheme.knightType.DifficultyChip,
-                        color = OnlineTeal,
+                        text  = waitingSince,
+                        style = MaterialTheme.knightType.StatLabel,
+                        color = TextTertiary,
                     )
                 }
-                Text(
-                    text  = "# ${room.roomCode}",
-                    style = MaterialTheme.knightType.StatLabel,
-                    color = TextTertiary,
-                )
             }
         }
 
@@ -637,11 +669,10 @@ private fun RoomCard(
                     if (enabled) OnlineTeal.copy(alpha = 0.7f) else BorderDefault,
                     KnightTourShapes.small,
                 )
-                .clickable(enabled = enabled) { onJoin() }
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Text(
-                text  = "JOIN",
+                text  = if (enabled) "JOIN →" else "...",
                 style = MaterialTheme.knightType.ButtonPrimary.copy(fontSize = 12.sp),
                 color = if (enabled) OnlineTeal else TextTertiary,
             )

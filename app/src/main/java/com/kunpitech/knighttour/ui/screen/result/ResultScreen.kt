@@ -875,25 +875,53 @@ private fun ActionButtons(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         // Primary: Play Again
+        val rematchState = uiState.rematchState
+        val isWaiting    = rematchState == RematchState.WAITING
+        val opponentName = uiState.opponentName.ifEmpty { "Opponent" }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp)
+                .height(if (isWaiting) 64.dp else 54.dp)
                 .background(
                     Brush.horizontalGradient(
                         listOf(accentColor.copy(alpha = 0.18f), accentColor.copy(alpha = 0.08f))
                     ),
                     KnightTourShapes.medium,
                 )
-                .border(BorderWidth.default, accentColor.copy(alpha = 0.55f), KnightTourShapes.medium)
-                .clickable { onEvent(ResultEvent.PlayAgain) },
+                .border(BorderWidth.default, accentColor.copy(alpha = if (isWaiting) 0.3f else 0.55f), KnightTourShapes.medium)
+                .clickable(enabled = !isWaiting && rematchState != RematchState.STARTING) {
+                    onEvent(ResultEvent.PlayAgain)
+                },
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text  = "PLAY AGAIN",
-                style = MaterialTheme.knightType.ButtonPrimary,
-                color = accentColor,
-            )
+            if (isWaiting) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val pulse by rememberInfiniteTransition(label = "rematch")
+                        .animateFloat(
+                            initialValue  = 0.5f,
+                            targetValue   = 1f,
+                            animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+                            label         = "rematch",
+                        )
+                    Text(
+                        text  = "WAITING FOR $opponentName...",
+                        style = MaterialTheme.knightType.ButtonPrimary,
+                        color = accentColor.copy(alpha = pulse),
+                        fontSize = 12.sp,
+                    )
+                    Text(
+                        text  = "Tap Play Again to rematch",
+                        color = accentColor.copy(alpha = 0.5f),
+                        fontSize = 10.sp,
+                    )
+                }
+            } else {
+                Text(
+                    text  = "PLAY AGAIN",
+                    style = MaterialTheme.knightType.ButtonPrimary,
+                    color = accentColor,
+                )
+            }
         }
 
         // Secondary row: Home + Leaderboard
@@ -971,7 +999,7 @@ private fun ActionButtons(
 @Composable
 fun ResultRoute(
     onPlayAgainOffline : () -> Unit,
-    onPlayAgainOnline  : () -> Unit,
+    onStartRematch     : (roomCode: String) -> Unit,   // replaces onPlayAgainOnline
     onGoHome           : () -> Unit,
     onOpenLeaderboard  : () -> Unit,
     viewModel          : ResultViewModel = hiltViewModel(),
@@ -983,8 +1011,13 @@ fun ResultRoute(
         onEvent = { event ->
             when (event) {
                 ResultEvent.PlayAgain -> {
-                    if (uiState.isOnlineMode) onPlayAgainOnline()
-                    else onPlayAgainOffline()
+                    if (uiState.isOnlineMode) {
+                        viewModel.requestRematch { newRoomCode, _ ->
+                            onStartRematch(newRoomCode)
+                        }
+                    } else {
+                        onPlayAgainOffline()
+                    }
                 }
                 ResultEvent.GoHome          -> onGoHome()
                 ResultEvent.OpenLeaderboard -> onOpenLeaderboard()

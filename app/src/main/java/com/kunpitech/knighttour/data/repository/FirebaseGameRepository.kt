@@ -124,6 +124,59 @@ class FirebaseGameRepository @Inject constructor() {
         )).await()
     }
 
+    /**
+     * Reset an existing room for a rematch — same room code, fresh state.
+     * Much cheaper than creating a new room; old data is overwritten in place.
+     */
+    suspend fun resetRoomForRematch(
+        roomCode  : String,
+        hostId    : String,
+        hostName  : String,
+        guestName : String,
+        boardSize : Int = 6,
+    ) {
+        // Reset room node to WAITING state, preserve host/guest names
+        val resetRoom = mapOf(
+            "status"    to "WAITING",
+            "hostId"    to hostId,
+            "guestId"   to "",
+            "boardSize" to boardSize,
+            "createdAt" to System.currentTimeMillis(),
+            "host"      to mapOf(
+                "name"        to hostName,
+                "moveCount"   to 0,
+                "isConnected" to true,
+                "moveHistory" to emptyList<Any>(),
+                "finishedAt"  to 0L,
+                "finalScore"  to 0,
+                "isCompleted" to false,
+            ),
+            "guest"     to mapOf(
+                "name"        to guestName,
+                "moveCount"   to 0,
+                "isConnected" to false,
+                "moveHistory" to emptyList<Any>(),
+                "finishedAt"  to 0L,
+                "finalScore"  to 0,
+                "isCompleted" to false,
+            ),
+        )
+        roomRef(roomCode).setValue(resetRoom).await()
+
+        // Explicitly write isConnected=true for host after reset
+        // This overwrites any stale onDisconnect value that may have fired
+        playerRef(roomCode, "host").child("isConnected").setValue(true).await()
+
+        // Reset matchResults — same node, fresh scores
+        db.getReference("matchResults/$roomCode").setValue(mapOf(
+            "host"  to mapOf("finalScore" to 0, "name" to hostName,  "isCompleted" to false),
+            "guest" to mapOf("finalScore" to 0, "name" to guestName, "isCompleted" to false),
+        )).await()
+
+        // Clear any stale rematch signals
+        db.getReference("rematch/$roomCode").removeValue().await()
+    }
+
     /** Join an existing room as guest. Returns true if room exists and is WAITING. */
     suspend fun joinRoom(
         roomCode  : String,
@@ -159,6 +212,9 @@ class FirebaseGameRepository @Inject constructor() {
 
     /** Delete a room (cleanup after game ends). */
     suspend fun deleteRoom(roomCode: String) {
+        // Cancel disconnect handlers so they don't fire on next session for same room
+        playerRef(roomCode, "host").child("isConnected").onDisconnect().cancel()
+        playerRef(roomCode, "guest").child("isConnected").onDisconnect().cancel()
         roomRef(roomCode).removeValue().await()
     }
 
@@ -225,8 +281,11 @@ class FirebaseGameRepository @Inject constructor() {
 
     /** Register an onDisconnect handler so Firebase auto-clears presence. */
     fun registerDisconnectHandler(roomCode: String, role: String) {
-        playerRef(roomCode, role).child("isConnected")
-            .onDisconnect().setValue(false)
+        val ref = playerRef(roomCode, role).child("isConnected")
+        // Cancel any previous onDisconnect for this path before registering a new one
+        // This prevents stale handlers from firing on rematch
+        ref.onDisconnect().cancel()
+        ref.onDisconnect().setValue(false)
     }
 
     // ── Observation flows ────────────────────────────────────────
@@ -301,6 +360,55 @@ class FirebaseGameRepository @Inject constructor() {
         }
         ref.addValueEventListener(listener)
         awaitClose { ref.removeEventListener(listener) }
+    }
+
+    /** Signal this player wants a rematch. */
+    suspend fun signalRematch(roomCode: String, role: String) {
+        db.getReference("rematch/$roomCode/$role").setValue("READY").await()
+    }
+
+    /** Host calls this after resetting the room — signals guest it's safe to join. */
+    suspend fun signalRoomReady(roomCode: String) {
+        db.getReference("rematch/$roomCode/roomReady").setValue(true).await()
+    }
+
+    /**
+     * Guest observes this — emits true only when host has reset room and marked it ready.
+     * Prevents guest from joining before room is in WAITING state.
+     */
+    fun observeRoomReady(roomCode: String): Flow<Boolean> = callbackFlow {
+        val ref = db.getReference("rematch/$roomCode/roomReady")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                val ready = snap.getValue(Boolean::class.java) ?: false
+                if (ready) trySend(true)
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
+    }
+
+    /** Observe rematch node — emits when both players have signalled READY. */
+    fun observeRematch(roomCode: String): Flow<Unit> = callbackFlow {
+        val ref = db.getReference("rematch/$roomCode")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                val hostReady  = snap.child("host").getValue(String::class.java).orEmpty()
+                val guestReady = snap.child("guest").getValue(String::class.java).orEmpty()
+                if (hostReady == "READY" && guestReady == "READY") {
+                    trySend(Unit)
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
+    }
+
+    /** Clean up rematch node after both navigate away. */
+    suspend fun clearRematch(roomCode: String) {
+        try { db.getReference("rematch/$roomCode").removeValue().await() } catch (_: Exception) {}
     }
 
     /** Check if a room code exists and is joinable. */

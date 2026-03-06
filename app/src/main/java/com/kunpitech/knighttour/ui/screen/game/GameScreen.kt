@@ -255,7 +255,11 @@ fun GameScreen(
             enter   = fadeIn(),
             exit    = fadeOut(tween(400)),
         ) {
-            WaitingForOpponentOverlay(roomCode = uiState.roomCode)
+            if (uiState.isRematch) {
+                RematchRejoinOverlay(opponentName = uiState.opponentName)
+            } else {
+                WaitingForOpponentOverlay(roomCode = uiState.roomCode)
+            }
         }
 
         // Opponent-finished banner — shown when opponent got stuck but we can still play
@@ -298,7 +302,7 @@ fun GameScreen(
         }
 
         AnimatedVisibility(
-            visible = uiState.gameState == GamePhase.FAILED,
+            visible = uiState.gameState == GamePhase.FAILED && !uiState.isOnlineMode,
             enter   = fadeIn(tween(700)),
             exit    = fadeOut(tween(300)),
         ) {
@@ -1177,6 +1181,44 @@ private fun OpponentFinishedBanner(opponentName: String) {
 }
 
 @Composable
+private fun RematchRejoinOverlay(opponentName: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xDD0A0A14)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            val pulse by rememberInfiniteTransition(label = "rejoin")
+                .animateFloat(
+                    initialValue  = 0.5f,
+                    targetValue   = 1f,
+                    animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+                    label = "rejoin",
+                )
+            Text("⚔️", fontSize = 48.sp)
+            Text(
+                text  = "REMATCH",
+                color = Color(0xFFD4A843),
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 3.sp,
+            )
+            Text(
+                text  = if (opponentName.isNotEmpty())
+                    "Waiting for $opponentName to rejoin..."
+                else "Waiting for opponent to rejoin...",
+                color = Color(0xFFB0B0C0).copy(alpha = pulse),
+                fontSize = 14.sp,
+            )
+        }
+    }
+}
+
+@Composable
 private fun WaitingForOpponentOverlay(roomCode: String) {
     val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
         initialValue  = 0.4f,
@@ -1478,25 +1520,20 @@ fun GameRoute(
         when (gameState) {
             GamePhase.COMPLETED -> {
                 if (uiState.isOnlineMode) {
-                    delay(300L) // no overlay, just brief pause
+                    onNavigateResult(sessionId)          // no overlay, instant
                 } else {
-                    delay(2000L) // show Victory overlay
-                }
-                onNavigateResult(sessionId)
-            }
-            GamePhase.OPPONENT_FINISHED -> {
-                delay(500L)
-                onNavigateResult(sessionId)
-            }
-            GamePhase.FAILED -> {
-                if (uiState.isOnlineMode) {
-                    // In online mode FAILED means both stuck — navigate
-                    delay(1000L)
+                    delay(2000L)      // show Victory overlay
                     onNavigateResult(sessionId)
                 }
-                // Offline FAILED handled by DefeatOverlay in GameScreen
             }
-            // WAITING_FOR_OPPONENT — don't navigate, stay on board watching opponent
+            GamePhase.ONLINE_GAME_OVER -> {
+                onNavigateResult(sessionId)              // instant, no overlay
+            }
+            GamePhase.FAILED -> {
+                if (!uiState.isOnlineMode) Unit          // offline — DefeatOverlay handles it
+                // online FAILED no longer used
+            }
+            // WAITING_FOR_OPPONENT — stay on board watching opponent
             else -> Unit
         }
     }
@@ -1504,9 +1541,9 @@ fun GameRoute(
     DisposableEffect(Unit) {
         onDispose {
             val state = viewModel.uiState.value
-            val gameEnded = state.gameState == GamePhase.COMPLETED         ||
-                    state.gameState == GamePhase.FAILED            ||
-                    state.gameState == GamePhase.OPPONENT_FINISHED ||
+            val gameEnded = state.gameState == GamePhase.COMPLETED          ||
+                    state.gameState == GamePhase.FAILED             ||
+                    state.gameState == GamePhase.ONLINE_GAME_OVER   ||
                     state.gameState == GamePhase.WAITING_FOR_OPPONENT
             if (!gameEnded) viewModel.onLeaveOnlineGame()
         }

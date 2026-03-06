@@ -25,6 +25,7 @@ googleGmsGoogleServices = "4.4.4"
 firebaseDatabase = "22.0.1"
 material3 = "1.4.0"
 foundation = "1.10.4"
+foundationLayout = "1.10.4"
 
 [libraries]
 androidx-compose-ui-text-google-fonts = { module = "androidx.compose.ui:ui-text-google-fonts", version.ref = "uiTextGoogleFonts" }
@@ -63,6 +64,7 @@ datastore-preferences = { group = "androidx.datastore", name = "datastore-prefer
 firebase-database = { group = "com.google.firebase", name = "firebase-database", version.ref = "firebaseDatabase" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "foundation" }
+androidx-compose-foundation-layout = { group = "androidx.compose.foundation", name = "foundation-layout", version.ref = "foundationLayout" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

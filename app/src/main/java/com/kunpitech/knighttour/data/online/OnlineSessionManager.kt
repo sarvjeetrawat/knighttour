@@ -140,7 +140,7 @@ class OnlineSessionManager @Inject constructor(
         scope     : CoroutineScope,
     ): Boolean {
         val localId = UUID.randomUUID().toString()
-        lastSession = null  // clear previous game data
+        lastSession = null
         resetRoomEvents()
         return try {
             val joined = firebaseRepo.joinRoom(

@@ -24,14 +24,15 @@ sealed class Screen(val route: String) {
 
     // Game — optional sessionId for resume; optional difficulty/mode for new game
     data object Game : Screen(
-        "game?sessionId={sessionId}&difficulty={difficulty}&gameMode={gameMode}&roomCode={roomCode}"
+        "game?sessionId={sessionId}&difficulty={difficulty}&gameMode={gameMode}&roomCode={roomCode}&isRematch={isRematch}"
     ) {
         fun createRoute(
-            sessionId  : String = "",
-            difficulty : String = "MEDIUM",
-            gameMode   : String = "OFFLINE",
-            roomCode   : String = "",
-        ) = "game?sessionId=$sessionId&difficulty=$difficulty&gameMode=$gameMode&roomCode=$roomCode"
+            sessionId  : String  = "",
+            difficulty : String  = "MEDIUM",
+            gameMode   : String  = "OFFLINE",
+            roomCode   : String  = "",
+            isRematch  : Boolean = false,
+        ) = "game?sessionId=$sessionId&difficulty=$difficulty&gameMode=$gameMode&roomCode=$roomCode&isRematch=$isRematch"
     }
 
     data object Lobby       : Screen("lobby")
@@ -116,6 +117,10 @@ fun KnightTourNavHost(
                     type         = NavType.StringType
                     defaultValue = ""
                 },
+                navArgument("isRematch") {
+                    type         = NavType.BoolType
+                    defaultValue = false
+                },
             ),
         ) {
             GameRoute(
@@ -158,9 +163,10 @@ fun KnightTourNavHost(
                         popUpTo(Screen.Home.route)
                     }
                 },
-                onPlayAgainOnline = {
-                    // Go back to Lobby so they can create/join a fresh room
-                    navController.navigate(Screen.Lobby.route) {
+                onStartRematch = { roomCode ->
+                    navController.navigate(
+                        Screen.Game.createRoute(gameMode = "ONLINE", roomCode = roomCode, isRematch = true)
+                    ) {
                         popUpTo(Screen.Home.route)
                     }
                 },

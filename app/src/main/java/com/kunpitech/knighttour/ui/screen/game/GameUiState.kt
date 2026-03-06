@@ -47,6 +47,7 @@ data class GameUiState(
     val roomCode          : String          = "",
     val waitingForOpponent: Boolean         = false,   // host waiting on game screen
     val opponentFinished  : Boolean         = false,   // opponent stuck, we can still play
+    val isRematch         : Boolean         = false,   // rematch — no code sharing needed
 
     // Score
     val currentScore     : Int             = 0,
@@ -57,7 +58,7 @@ data class GameUiState(
     val showValidMoves   : Boolean         = true,
 )
 
-enum class GamePhase { PLAYING, PAUSED, COMPLETED, FAILED, OPPONENT_FINISHED, WAITING_FOR_OPPONENT }
+enum class GamePhase { PLAYING, PAUSED, COMPLETED, FAILED, OPPONENT_FINISHED, WAITING_FOR_OPPONENT, ONLINE_GAME_OVER }
 
 enum class GameModeUi { OFFLINE, ONLINE, DEVIL }
 

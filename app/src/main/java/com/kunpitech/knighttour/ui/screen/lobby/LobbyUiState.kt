@@ -9,7 +9,7 @@ import com.kunpitech.knighttour.data.repository.RoomBrowserEntry
 
 data class LobbyUiState(
     val playerName      : String              = "Knight",
-    val tab             : LobbyTab            = LobbyTab.CREATE,
+    val tab             : LobbyTab            = LobbyTab.BROWSE,
 
     // Board size selection (CREATE tab)
     val selectedSize    : OnlineBoardSize     = OnlineBoardSize.SIX,

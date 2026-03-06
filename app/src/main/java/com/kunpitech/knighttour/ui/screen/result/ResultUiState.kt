@@ -32,7 +32,7 @@ data class ResultUiState(
 
     // Rank / progression
     val rankLabel        : String       = "KNIGHT",
-    val rankProgress     : Float        = 0.62f,   // 0..1 within current rank band
+    val rankProgress     : Float        = 0.62f,
     val isNewPersonalBest: Boolean      = false,
     val personalBest     : Int          = 5200,
 
@@ -42,9 +42,17 @@ data class ResultUiState(
     val opponentScore    : Int          = 0,
     val didWinOnline     : Boolean      = false,
 
+    // Rematch (online only)
+    val roomCode         : String       = "",
+    val localRole        : String       = "",   // "host" or "guest"
+    val localName        : String       = "",
+    val rematchState     : RematchState = RematchState.IDLE,
+
     val isLoading        : Boolean      = false,
 )
 
+
+enum class RematchState { IDLE, WAITING, STARTING }
 
 sealed interface ResultEvent {
     data object PlayAgain       : ResultEvent
