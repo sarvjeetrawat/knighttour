@@ -16,6 +16,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -58,7 +62,9 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Surface
 import androidx.compose.ui.text.font.FontFamily
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -121,14 +127,6 @@ fun GameScreen(
     onNavigateResult : () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
-
-    // Auto-navigate to result after victory animation
-    LaunchedEffect(uiState.gameState) {
-        if (uiState.gameState == GamePhase.COMPLETED) {
-            delay(2000L)
-            onNavigateResult()
-        }
-    }
 
     // ── SHARED INFINITE ANIMATIONS ───────────────────────────────
     val infiniteTransition = rememberInfiniteTransition(label = "game_global")
@@ -260,6 +258,25 @@ fun GameScreen(
             WaitingForOpponentOverlay(roomCode = uiState.roomCode)
         }
 
+        // Opponent-finished banner — shown when opponent got stuck but we can still play
+        AnimatedVisibility(
+            visible = uiState.opponentFinished &&
+                    uiState.gameState == GamePhase.PLAYING,
+            enter   = fadeIn() + slideInVertically { -it },
+            exit    = fadeOut() + slideOutVertically { -it },
+        ) {
+            OpponentFinishedBanner(opponentName = uiState.opponentName)
+        }
+
+        // Waiting overlay — we're stuck, watching opponent play live
+        AnimatedVisibility(
+            visible = uiState.gameState == GamePhase.WAITING_FOR_OPPONENT,
+            enter   = fadeIn(tween(600)),
+            exit    = fadeOut(tween(300)),
+        ) {
+            WaitingForOpponentToFinishOverlay(uiState = uiState)
+        }
+
         AnimatedVisibility(
             visible = uiState.gameState == GamePhase.PAUSED && !uiState.waitingForOpponent,
             enter   = fadeIn() + scaleIn(initialScale = 0.88f),
@@ -273,7 +290,7 @@ fun GameScreen(
         }
 
         AnimatedVisibility(
-            visible = uiState.gameState == GamePhase.COMPLETED,
+            visible = uiState.gameState == GamePhase.COMPLETED && !uiState.isOnlineMode,
             enter   = fadeIn(tween(700)),
             exit    = fadeOut(tween(300)),
         ) {
@@ -998,6 +1015,168 @@ private fun ActionButton(
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
+private fun WaitingForOpponentToFinishOverlay(uiState: GameUiState) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xEE0A0A14)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+            modifier = Modifier.padding(24.dp),
+        ) {
+            // Your score
+            Text(
+                text = "YOU FINISHED",
+                color = Color(0xFFD4A843),
+                fontSize = 13.sp,
+                letterSpacing = 2.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = uiState.currentScore.toString(),
+                color = Color.White,
+                fontSize = 42.sp,
+                fontWeight = FontWeight.Bold,
+            )
+
+            Spacer(Modifier.height(4.dp))
+
+            // Opponent section
+            val opponentName = uiState.opponentName.ifEmpty { "Opponent" }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // Pulsing dot
+                val pulse by rememberInfiniteTransition(label = "dot")
+                    .animateFloat(
+                        initialValue = 0.4f,
+                        targetValue  = 1f,
+                        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+                        label = "dot",
+                    )
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .background(Color(0xFF4CAF50).copy(alpha = pulse), CircleShape)
+                )
+                Text(
+                    text = "$opponentName is still playing...",
+                    color = Color(0xFFB0B0C0),
+                    fontSize = 14.sp,
+                )
+            }
+
+            // Live opponent board
+            if (uiState.opponentCells.isNotEmpty()) {
+                val size  = uiState.boardSize
+                val cellPx = (260.dp / size)
+                Text(
+                    text = "${uiState.opponentMoves} / ${size * size} squares",
+                    color = Color(0xFF888899),
+                    fontSize = 12.sp,
+                )
+                Box(
+                    modifier = Modifier
+                        .size(264.dp)
+                        .background(Color(0xFF12121E), RoundedCornerShape(12.dp))
+                        .padding(2.dp),
+                ) {
+                    Column {
+                        for (r in 0 until size) {
+                            Row {
+                                for (c in 0 until size) {
+                                    val cell = uiState.opponentCells.getOrNull(r * size + c)
+                                    val bg = when {
+                                        cell?.isKnight  == true -> Color(0xFF4CAF50)
+                                        cell?.isVisited == true -> Color(0xFF2A4A3A)
+                                        (r + c) % 2 == 0        -> Color(0xFF1E1E2E)
+                                        else                    -> Color(0xFF16162A)
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(cellPx)
+                                            .background(bg),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        if (cell?.isKnight == true) {
+                                            Text("♞", color = Color.White,
+                                                fontSize = (cellPx.value * 0.55f).sp)
+                                        } else if (cell?.isVisited == true &&
+                                            cell.moveNumber > 0) {
+                                            Text(
+                                                text  = cell.moveNumber.toString(),
+                                                color = Color(0xFF88CC88),
+                                                fontSize = (cellPx.value * 0.35f).sp,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // No moves yet — show waiting dots
+                Text(
+                    text = "Waiting for first move...",
+                    color = Color(0xFF666677),
+                    fontSize = 13.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OpponentFinishedBanner(opponentName: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xCC1A1A2E),
+            border = BorderStroke(1.dp, Color(0xFFD4A843)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    text = "⚔️",
+                    fontSize = 18.sp,
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (opponentName.isNotEmpty())
+                            "$opponentName has finished!"
+                        else "Opponent has finished!",
+                        color = Color(0xFFD4A843),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                    )
+                    Text(
+                        text = "Keep going — you can still beat their score!",
+                        color = Color(0xFFB0B0C0),
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun WaitingForOpponentOverlay(roomCode: String) {
     val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
         initialValue  = 0.4f,
@@ -1293,9 +1472,44 @@ fun GameRoute(
     val uiState   by viewModel.uiState.collectAsStateWithLifecycle()
     val sessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
 
-    // Clean up online room when leaving the game screen for any reason
+    // Navigate to result after game ends
+    val gameState = uiState.gameState
+    LaunchedEffect(gameState) {
+        when (gameState) {
+            GamePhase.COMPLETED -> {
+                if (uiState.isOnlineMode) {
+                    delay(300L) // no overlay, just brief pause
+                } else {
+                    delay(2000L) // show Victory overlay
+                }
+                onNavigateResult(sessionId)
+            }
+            GamePhase.OPPONENT_FINISHED -> {
+                delay(500L)
+                onNavigateResult(sessionId)
+            }
+            GamePhase.FAILED -> {
+                if (uiState.isOnlineMode) {
+                    // In online mode FAILED means both stuck — navigate
+                    delay(1000L)
+                    onNavigateResult(sessionId)
+                }
+                // Offline FAILED handled by DefeatOverlay in GameScreen
+            }
+            // WAITING_FOR_OPPONENT — don't navigate, stay on board watching opponent
+            else -> Unit
+        }
+    }
+
     DisposableEffect(Unit) {
-        onDispose { viewModel.onLeaveOnlineGame() }
+        onDispose {
+            val state = viewModel.uiState.value
+            val gameEnded = state.gameState == GamePhase.COMPLETED         ||
+                    state.gameState == GamePhase.FAILED            ||
+                    state.gameState == GamePhase.OPPONENT_FINISHED ||
+                    state.gameState == GamePhase.WAITING_FOR_OPPONENT
+            if (!gameEnded) viewModel.onLeaveOnlineGame()
+        }
     }
 
     GameScreen(

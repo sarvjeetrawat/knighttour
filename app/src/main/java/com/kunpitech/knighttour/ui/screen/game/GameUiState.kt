@@ -43,8 +43,10 @@ data class GameUiState(
     val opponentName      : String          = "",
     val opponentMoves     : Int             = 0,
     val opponentProgress  : Float           = 0f,
+    val opponentCells     : List<CellState> = emptyList(),  // live opponent board
     val roomCode          : String          = "",
     val waitingForOpponent: Boolean         = false,   // host waiting on game screen
+    val opponentFinished  : Boolean         = false,   // opponent stuck, we can still play
 
     // Score
     val currentScore     : Int             = 0,
@@ -55,7 +57,7 @@ data class GameUiState(
     val showValidMoves   : Boolean         = true,
 )
 
-enum class GamePhase { PLAYING, PAUSED, COMPLETED, FAILED }
+enum class GamePhase { PLAYING, PAUSED, COMPLETED, FAILED, OPPONENT_FINISHED, WAITING_FOR_OPPONENT }
 
 enum class GameModeUi { OFFLINE, ONLINE, DEVIL }
 

@@ -158,7 +158,8 @@ fun ResultScreen(
         label = "particlePulse",
     )
 
-    val accentColor = if (uiState.isVictory) CrownGold else BloodRedBright
+    val didWin = if (uiState.isOnlineMode) uiState.didWinOnline else uiState.isVictory
+    val accentColor = if (didWin) CrownGold else BloodRedBright
 
     Box(
         modifier = Modifier
@@ -169,7 +170,7 @@ fun ResultScreen(
         // ── BACKGROUND ───────────────────────────────────────────
         ResultBackground(
             modifier    = Modifier.fillMaxSize(),
-            isVictory   = uiState.isVictory,
+            isVictory   = didWin,
             pulse       = particlePulse,
         )
 
@@ -343,6 +344,7 @@ private fun HeroSection(
     pulse       : Float,
     modifier    : Modifier = Modifier,
 ) {
+    val didWin = if (uiState.isOnlineMode) uiState.didWinOnline else uiState.isVictory
     Column(
         modifier            = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -369,7 +371,7 @@ private fun HeroSection(
                 )
             }
             Text(
-                text     = if (uiState.isVictory) "🏆" else "💀",
+                text     = if (didWin) "🏆" else "💀",
                 fontSize = 58.sp,
                 modifier = Modifier.scale(0.95f + 0.05f * pulse),
             )
@@ -378,7 +380,8 @@ private fun HeroSection(
         // Outcome label
         Text(
             text  = when {
-                uiState.isVictory && uiState.isOnlineMode && uiState.didWinOnline -> "CHAMPION"
+                uiState.isOnlineMode && uiState.didWinOnline  -> if (uiState.isVictory) "CHAMPION" else "YOU WIN"
+                uiState.isOnlineMode && !uiState.didWinOnline -> "YOU LOSE"
                 uiState.isVictory -> "VICTORY"
                 uiState.defeatReason == DefeatReason.TIME_UP -> "TIME'S UP"
                 else -> "DEFEATED"
@@ -967,10 +970,11 @@ private fun ActionButtons(
 
 @Composable
 fun ResultRoute(
-    onPlayAgain       : () -> Unit,
-    onGoHome          : () -> Unit,
-    onOpenLeaderboard : () -> Unit,
-    viewModel         : ResultViewModel = hiltViewModel(),
+    onPlayAgainOffline : () -> Unit,
+    onPlayAgainOnline  : () -> Unit,
+    onGoHome           : () -> Unit,
+    onOpenLeaderboard  : () -> Unit,
+    viewModel          : ResultViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
@@ -978,7 +982,10 @@ fun ResultRoute(
         uiState = uiState,
         onEvent = { event ->
             when (event) {
-                ResultEvent.PlayAgain       -> onPlayAgain()
+                ResultEvent.PlayAgain -> {
+                    if (uiState.isOnlineMode) onPlayAgainOnline()
+                    else onPlayAgainOffline()
+                }
                 ResultEvent.GoHome          -> onGoHome()
                 ResultEvent.OpenLeaderboard -> onOpenLeaderboard()
                 ResultEvent.ShareResult     -> { /* TODO: Android share sheet */ }

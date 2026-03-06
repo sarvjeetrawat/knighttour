@@ -60,6 +60,8 @@ data class PlayerStateDto(
     val moveHistory  : List<MoveDto>      = emptyList(),
     val isConnected  : Boolean            = true,
     val finishedAt   : Long               = 0L,
+    val finalScore   : Int                = 0,
+    val isCompleted  : Boolean            = false,   // true = cleared the full board
 )
 
 data class MoveDto(
@@ -114,6 +116,12 @@ class FirebaseGameRepository @Inject constructor() {
             ),
         )
         roomRef(roomCode).setValue(room).await()
+
+        // Seed matchResults node so it exists before game ends
+        db.getReference("matchResults/$roomCode").setValue(mapOf(
+            "host"  to mapOf("finalScore" to 0, "name" to hostName),
+            "guest" to mapOf("finalScore" to 0, "name" to ""),
+        )).await()
     }
 
     /** Join an existing room as guest. Returns true if room exists and is WAITING. */
@@ -128,11 +136,14 @@ class FirebaseGameRepository @Inject constructor() {
         if (status != "WAITING") return false
 
         roomRef(roomCode).updateChildren(mapOf(
-            "guestId"          to guestId,
-            "status"           to "PLAYING",
-            "guest/name"       to guestName,
+            "guestId"           to guestId,
+            "status"            to "PLAYING",
+            "guest/name"        to guestName,
             "guest/isConnected" to true,
         )).await()
+
+        // Update guest name in matchResults
+        db.getReference("matchResults/$roomCode/guest/name").setValue(guestName).await()
         return true
     }
 
@@ -169,10 +180,40 @@ class FirebaseGameRepository @Inject constructor() {
     }
 
     /** Mark player as finished with timestamp. */
-    suspend fun markFinished(roomCode: String, role: String) {
-        playerRef(roomCode, role).updateChildren(mapOf(
-            "finishedAt" to System.currentTimeMillis(),
-        )).await()
+    suspend fun markFinished(roomCode: String, role: String, finalScore: Int = 0, moveCount: Int = 0, name: String = "", isCompleted: Boolean = false) {
+        writeMatchResult(roomCode, role, finalScore, moveCount, name, isCompleted)
+        try {
+            playerRef(roomCode, role).updateChildren(mapOf(
+                "finishedAt"  to System.currentTimeMillis(),
+                "finalScore"  to finalScore,
+                "moveCount"   to moveCount,
+                "isCompleted" to isCompleted,
+            )).await()
+        } catch (_: Exception) {}
+    }
+
+    /** Read both players' final scores from the room. Returns null if room not found. */
+    suspend fun getMatchResult(roomCode: String): MatchResult? {
+        return try {
+            val snap = roomRef(roomCode).get().await()
+            if (!snap.exists()) return null
+
+            val hostScore    = snap.child("host/finalScore").getValue(Int::class.java)  ?: 0
+            val guestScore   = snap.child("guest/finalScore").getValue(Int::class.java) ?: 0
+            val hostName     = snap.child("host/name").getValue(String::class.java)     ?: ""
+            val guestName    = snap.child("guest/name").getValue(String::class.java)    ?: ""
+            val hostFinished = snap.child("host/finishedAt").getValue(Long::class.java) ?: 0L
+            val guestFinished= snap.child("guest/finishedAt").getValue(Long::class.java)?: 0L
+
+            MatchResult(
+                hostName      = hostName,
+                hostScore     = hostScore,
+                hostFinished  = hostFinished,
+                guestName     = guestName,
+                guestScore    = guestScore,
+                guestFinished = guestFinished,
+            )
+        } catch (_: Exception) { null }
     }
 
     // ── Presence ─────────────────────────────────────────────────
@@ -223,6 +264,43 @@ class FirebaseGameRepository @Inject constructor() {
         val snap = roomRef(roomCode).get().await()
         if (!snap.exists()) return null
         return parseRoom(snap)
+    }
+
+    /** Write score to the persistent matchResults node only (no room write). */
+    suspend fun writeMatchResult(roomCode: String, role: String, finalScore: Int, moveCount: Int, name: String = "", isCompleted: Boolean = false) {
+        val data = mutableMapOf<String, Any>(
+            "finalScore"  to finalScore,
+            "moveCount"   to moveCount,
+            "finishedAt"  to System.currentTimeMillis(),
+            "isCompleted" to isCompleted,
+        )
+        if (name.isNotEmpty()) data["name"] = name
+        db.getReference("matchResults/$roomCode/$role").updateChildren(data).await()
+    }
+
+    /** One-time fetch of a player node. Used to capture finalScore after game ends. */
+    suspend fun getOpponentSnapshot(roomCode: String, role: String): DataSnapshot? {
+        return try {
+            playerRef(roomCode, role).get().await()
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Observe opponent's score from the persistent matchResults node.
+     * This node is never deleted, so it works even after the room is gone.
+     * Emits the opponent's finalScore whenever it changes from 0 to a real value.
+     */
+    fun observeMatchResult(roomCode: String, opponentRole: String): Flow<Int> = callbackFlow {
+        val ref = db.getReference("matchResults/$roomCode/$opponentRole/finalScore")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                val score = snap.getValue(Int::class.java) ?: 0
+                trySend(score)
+            }
+            override fun onCancelled(error: DatabaseError) { trySend(0) }
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
     }
 
     /** Check if a room code exists and is joinable. */
@@ -313,12 +391,14 @@ class FirebaseGameRepository @Inject constructor() {
         } else null
 
         return PlayerStateDto(
-            name        = snap.child("name").getValue(String::class.java)        ?: "",
-            moveCount   = snap.child("moveCount").getValue(Int::class.java)      ?: 0,
+            name        = snap.child("name").getValue(String::class.java)         ?: "",
+            moveCount   = snap.child("moveCount").getValue(Int::class.java)       ?: 0,
             lastMove    = lastMove,
             moveHistory = history,
             isConnected = snap.child("isConnected").getValue(Boolean::class.java) ?: false,
-            finishedAt  = snap.child("finishedAt").getValue(Long::class.java)    ?: 0L,
+            finishedAt  = snap.child("finishedAt").getValue(Long::class.java)     ?: 0L,
+            finalScore  = snap.child("finalScore").getValue(Int::class.java)      ?: 0,
+            isCompleted = snap.child("isCompleted").getValue(Boolean::class.java) ?: false,
         )
     }
 
@@ -494,6 +574,15 @@ class FirebaseGameRepository @Inject constructor() {
         )
     }
 }
+
+data class MatchResult(
+    val hostName      : String,
+    val hostScore     : Int,
+    val hostFinished  : Long,
+    val guestName     : String,
+    val guestScore    : Int,
+    val guestFinished : Long,
+)
 
 data class RoomBrowserEntry(
     val roomCode  : String,

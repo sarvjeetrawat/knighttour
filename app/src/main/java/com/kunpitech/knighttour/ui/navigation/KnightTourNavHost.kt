@@ -153,8 +153,14 @@ fun KnightTourNavHost(
             ),
         ) {
             ResultRoute(
-                onPlayAgain = {
+                onPlayAgainOffline = {
                     navController.navigate(Screen.Game.createRoute()) {
+                        popUpTo(Screen.Home.route)
+                    }
+                },
+                onPlayAgainOnline = {
+                    // Go back to Lobby so they can create/join a fresh room
+                    navController.navigate(Screen.Lobby.route) {
                         popUpTo(Screen.Home.route)
                     }
                 },

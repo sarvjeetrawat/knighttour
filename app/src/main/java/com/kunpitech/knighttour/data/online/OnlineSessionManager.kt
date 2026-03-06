@@ -6,8 +6,11 @@ import com.kunpitech.knighttour.data.repository.toPosition
 import com.kunpitech.knighttour.domain.model.Position
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -17,66 +20,58 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
 
-// ================================================================
-//  ONLINE SESSION MANAGER
-//
-//  Single source of truth for an active multiplayer session.
-//  Injected into LobbyViewModel (room setup) and
-//  GameViewModel (in-game sync).
-//
-//  Responsibilities:
-//  1. Generate / validate room codes
-//  2. Create and join Firebase rooms
-//  3. Push local moves to Firebase
-//  4. Observe opponent state and emit updates
-//  5. Manage presence (isConnected flag + onDisconnect handler)
-//  6. Clean up on game end
-//
-//  Package: data/online/OnlineSessionManager.kt
-// ================================================================
-
 enum class OnlineRole { HOST, GUEST }
 
 data class OnlineSession(
-    val roomCode     : String,
-    val localRole    : OnlineRole,
-    val localId      : String,
-    val localName    : String,
-    val opponentName : String  = "",
-    val boardSize    : Int     = 6,
+    val roomCode           : String,
+    val localRole          : OnlineRole,
+    val localId            : String,
+    val localName          : String,
+    val opponentName       : String  = "",
+    val boardSize          : Int     = 6,
+    val opponentFinalScore : Int     = 0,
 )
 
 sealed interface RoomEvent {
-    data object  WaitingForOpponent                   : RoomEvent
-    data class   OpponentJoined(val name: String)     : RoomEvent
-    data object  GameStarted                          : RoomEvent
+    data object  WaitingForOpponent                            : RoomEvent
+    data class   OpponentJoined(val name: String)              : RoomEvent
+    data object  GameStarted                                   : RoomEvent
     data class   OpponentMoved(val moveCount: Int,
-                               val history: List<Position>) : RoomEvent
-    data object  OpponentDisconnected                 : RoomEvent
-    data object  OpponentReconnected                  : RoomEvent
-    data object  GameFinished                         : RoomEvent
-    data class   Error(val message: String)           : RoomEvent
+                               val history: List<Position>)    : RoomEvent
+    data object  OpponentDisconnected                          : RoomEvent
+    data object  OpponentReconnected                           : RoomEvent
+    /** Opponent finished their game. isCompleted=true means they cleared the board. */
+    data class   OpponentFinished(val isCompleted: Boolean)    : RoomEvent
+    data object  GameFinished                                  : RoomEvent
+    data class   Error(val message: String)                    : RoomEvent
 }
 
 @Singleton
 class OnlineSessionManager @Inject constructor(
     private val firebaseRepo: FirebaseGameRepository,
 ) {
-    // Current session — null when not in a multiplayer game
     private var session: OnlineSession? = null
+    private var lastSession: OnlineSession? = null
 
-    private val _roomEvents = MutableStateFlow<RoomEvent>(RoomEvent.WaitingForOpponent)
-    val roomEvents: StateFlow<RoomEvent> = _roomEvents.asStateFlow()
+    private var _roomEvents = MutableSharedFlow<RoomEvent>(replay = 3)
+    var roomEvents: SharedFlow<RoomEvent> = _roomEvents.asSharedFlow()
+        private set
+
+    private fun resetRoomEvents() {
+        _roomEvents = MutableSharedFlow(replay = 3)
+        roomEvents  = _roomEvents.asSharedFlow()
+    }
 
     private val _opponentState = MutableStateFlow<PlayerStateDto?>(null)
     val opponentState: StateFlow<PlayerStateDto?> = _opponentState.asStateFlow()
 
-    // ── Room code ────────────────────────────────────────────────
-
-    /** Generate a random 6-digit numeric room code. */
     fun generateRoomCode(): String = Random.nextInt(100_000, 999_999).toString()
 
     fun currentSession(): OnlineSession? = session
+    fun lastCompletedSession(): OnlineSession? = lastSession
+    fun clearLastSession() { lastSession = null }
+
+    fun snapshotLastSession() { lastSession = session }
 
     fun localRole(): OnlineRole? = session?.localRole
 
@@ -92,12 +87,6 @@ class OnlineSessionManager @Inject constructor(
         null             -> "host"
     }
 
-    // ── Host flow ────────────────────────────────────────────────
-
-    /**
-     * Create a room and wait for opponent.
-     * Emits WaitingForOpponent immediately, then OpponentJoined when guest connects.
-     */
     suspend fun createRoom(
         roomCode  : String,
         localName : String,
@@ -105,14 +94,15 @@ class OnlineSessionManager @Inject constructor(
         scope     : CoroutineScope,
     ) {
         val localId = UUID.randomUUID().toString()
+        lastSession = null  // clear previous game data
+        resetRoomEvents()
         session = OnlineSession(
-            roomCode     = roomCode,
-            localRole    = OnlineRole.HOST,
-            localId      = localId,
-            localName    = localName,
-            boardSize    = boardSize,
+            roomCode  = roomCode,
+            localRole = OnlineRole.HOST,
+            localId   = localId,
+            localName = localName,
+            boardSize = boardSize,
         )
-
         try {
             firebaseRepo.createRoom(
                 roomCode  = roomCode,
@@ -121,9 +111,8 @@ class OnlineSessionManager @Inject constructor(
                 boardSize = boardSize,
             )
             firebaseRepo.registerDisconnectHandler(roomCode, "host")
-            _roomEvents.value = RoomEvent.WaitingForOpponent
+            _roomEvents.tryEmit(RoomEvent.WaitingForOpponent)
 
-            // Watch for guest joining
             firebaseRepo.observeRoomStatus(roomCode)
                 .onEach { status ->
                     when (status) {
@@ -131,33 +120,28 @@ class OnlineSessionManager @Inject constructor(
                             val room = firebaseRepo.getRoomOnce(roomCode)
                             val guestName = room?.guest?.name ?: "Opponent"
                             session = session?.copy(opponentName = guestName)
-                            _roomEvents.value = RoomEvent.OpponentJoined(guestName)
-                            _roomEvents.value = RoomEvent.GameStarted
+                            _roomEvents.tryEmit(RoomEvent.OpponentJoined(guestName))
+                            _roomEvents.tryEmit(RoomEvent.GameStarted)
                             observeOpponent(roomCode, scope)
                         }
-                        "FINISHED" -> _roomEvents.value = RoomEvent.GameFinished
+                        "FINISHED" -> _roomEvents.tryEmit(RoomEvent.GameFinished)
                     }
                 }
                 .launchIn(scope)
 
         } catch (e: Exception) {
-            _roomEvents.value = RoomEvent.Error(e.message ?: "Failed to create room")
+            _roomEvents.tryEmit(RoomEvent.Error(e.message ?: "Failed to create room"))
         }
     }
 
-    // ── Guest flow ───────────────────────────────────────────────
-
-    /**
-     * Join an existing room as guest.
-     * Returns false if room not found or already full.
-     */
     suspend fun joinRoom(
         roomCode  : String,
         localName : String,
         scope     : CoroutineScope,
     ): Boolean {
         val localId = UUID.randomUUID().toString()
-
+        lastSession = null  // clear previous game data
+        resetRoomEvents()
         return try {
             val joined = firebaseRepo.joinRoom(
                 roomCode  = roomCode,
@@ -178,19 +162,16 @@ class OnlineSessionManager @Inject constructor(
             )
 
             firebaseRepo.registerDisconnectHandler(roomCode, "guest")
-            _roomEvents.value = RoomEvent.GameStarted
+            _roomEvents.tryEmit(RoomEvent.GameStarted)
             observeOpponent(roomCode, scope)
             true
 
         } catch (e: Exception) {
-            _roomEvents.value = RoomEvent.Error(e.message ?: "Failed to join room")
+            _roomEvents.tryEmit(RoomEvent.Error(e.message ?: "Failed to join room"))
             false
         }
     }
 
-    // ── In-game ──────────────────────────────────────────────────
-
-    /** Push a move to Firebase after every local knight move. */
     suspend fun pushMove(position: Position, fullHistory: List<Position>) {
         val s = session ?: return
         try {
@@ -200,20 +181,32 @@ class OnlineSessionManager @Inject constructor(
                 position = position,
                 history  = fullHistory,
             )
-        } catch (e: Exception) {
-            // Non-fatal — local game continues even if push fails
-        }
-    }
-
-    /** Call when local player finishes the board. */
-    suspend fun markLocalFinished() {
-        val s = session ?: return
-        try {
-            firebaseRepo.markFinished(s.roomCode, localRoleStr())
         } catch (_: Exception) {}
     }
 
-    /** Set presence on app foreground/background. */
+    /**
+     * Called by GameViewModel to restart opponent observation in the game's scope.
+     * The lobby scope may be cancelled by the time GameViewModel starts.
+     */
+    fun startObservingOpponent(scope: CoroutineScope) {
+        val s = session ?: return
+        observeOpponent(s.roomCode, scope)
+    }
+
+    suspend fun markLocalFinished(finalScore: Int = 0, moveCount: Int = 0, isCompleted: Boolean = false) {
+        val s = session ?: return
+        val roomCode = s.roomCode
+        val role     = localRoleStr()
+        val name     = s.localName
+        try {
+            firebaseRepo.markFinished(roomCode, role, finalScore, moveCount, name, isCompleted)
+        } catch (e: Exception) {
+            try {
+                firebaseRepo.writeMatchResult(roomCode, role, finalScore, moveCount, name, isCompleted)
+            } catch (_: Exception) {}
+        }
+    }
+
     suspend fun setConnected(connected: Boolean) {
         val s = session ?: return
         try {
@@ -221,27 +214,21 @@ class OnlineSessionManager @Inject constructor(
         } catch (_: Exception) {}
     }
 
-    // ── Cleanup ──────────────────────────────────────────────────
-
-    /** Call on game end or screen exit. Marks room FINISHED and deletes it. */
     suspend fun endSession(deleteRoom: Boolean = true) {
         val s = session ?: return
+        lastSession = s
         try {
             firebaseRepo.setConnected(s.roomCode, localRoleStr(), false)
-            // Always mark finished so the other player knows game ended
             firebaseRepo.setRoomFinished(s.roomCode)
-            // Host deletes the room to keep Firebase clean
             if (s.localRole == OnlineRole.HOST) {
-                kotlinx.coroutines.delay(1500) // small delay so guest reads FINISHED first
+                kotlinx.coroutines.delay(8000)
                 firebaseRepo.deleteRoom(s.roomCode)
             }
         } catch (_: Exception) {}
         session = null
-        _roomEvents.value = RoomEvent.WaitingForOpponent
+        _roomEvents.tryEmit(RoomEvent.WaitingForOpponent)
         _opponentState.value = null
     }
-
-    // ── Private ──────────────────────────────────────────────────
 
     private fun observeOpponent(roomCode: String, scope: CoroutineScope) {
         firebaseRepo.observeOpponent(roomCode, opponentRole())
@@ -249,15 +236,17 @@ class OnlineSessionManager @Inject constructor(
                 _opponentState.value = state
 
                 if (!state.isConnected) {
-                    _roomEvents.value = RoomEvent.OpponentDisconnected
+                    _roomEvents.tryEmit(RoomEvent.OpponentDisconnected)
                 } else {
-                    // Emit move event if moveCount changed
                     val history = state.moveHistory.map { it.toPosition() }
-                    _roomEvents.value = RoomEvent.OpponentMoved(state.moveCount, history)
+                    _roomEvents.tryEmit(RoomEvent.OpponentMoved(state.moveCount, history))
                 }
 
                 if (state.finishedAt > 0L) {
-                    _roomEvents.value = RoomEvent.GameFinished
+                    if (state.finalScore > 0) {
+                        session = session?.copy(opponentFinalScore = state.finalScore)
+                    }
+                    _roomEvents.tryEmit(RoomEvent.OpponentFinished(state.isCompleted))
                 }
             }
             .launchIn(scope)
