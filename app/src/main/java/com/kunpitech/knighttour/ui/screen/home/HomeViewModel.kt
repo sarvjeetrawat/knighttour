@@ -1,5 +1,10 @@
 package com.kunpitech.knighttour.ui.screen.home
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kunpitech.knighttour.data.repository.GameRepository
@@ -7,6 +12,7 @@ import com.kunpitech.knighttour.data.repository.UserPreferencesRepository
 import com.kunpitech.knighttour.domain.engine.ScoreCalculator
 import com.kunpitech.knighttour.domain.model.Difficulty
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,6 +28,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    @ApplicationContext
+    private val context         : Context,
     private val gameRepository  : GameRepository,
     private val prefsRepository : UserPreferencesRepository,
     private val scoreCalculator : ScoreCalculator,
@@ -34,6 +42,21 @@ class HomeViewModel @Inject constructor(
     private val _resumeSessionId = MutableStateFlow<String?>(null)
     val resumeSessionId: StateFlow<String?> = _resumeSessionId.asStateFlow()
 
+    // ConnectivityManager callback — updates isOnline in real time
+    private val connectivityManager =
+        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            _uiState.update { it.copy(isOnline = true) }
+        }
+        override fun onLost(network: Network) {
+            // Check if any other network is still available
+            val stillOnline = connectivityManager.activeNetwork != null
+            _uiState.update { it.copy(isOnline = stillOnline) }
+        }
+    }
+
     init {
         observePreferences()
         observeActiveGame()
@@ -42,6 +65,23 @@ class HomeViewModel @Inject constructor(
         gameRepository.getFinishedSessions(limit = 1)
             .onEach { loadStats() }
             .launchIn(viewModelScope)
+
+        // Set initial online state from current active network
+        val active = connectivityManager.activeNetwork
+        val caps   = connectivityManager.getNetworkCapabilities(active)
+        val hasNet = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        _uiState.update { it.copy(isOnline = hasNet) }
+
+        // Register live connectivity callback
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        connectivityManager.registerNetworkCallback(request, networkCallback)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        try { connectivityManager.unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
     }
 
     fun onEvent(event: HomeEvent) {

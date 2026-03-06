@@ -39,11 +39,12 @@ data class GameUiState(
     val shakeCell        : Pair<Int, Int>? = null,   // invalid move
 
     // Online
-    val isOnlineMode     : Boolean         = false,
-    val opponentName     : String          = "",
-    val opponentMoves    : Int             = 0,
-    val opponentProgress : Float           = 0f,
-    val roomCode         : String          = "",
+    val isOnlineMode      : Boolean         = false,
+    val opponentName      : String          = "",
+    val opponentMoves     : Int             = 0,
+    val opponentProgress  : Float           = 0f,
+    val roomCode          : String          = "",
+    val waitingForOpponent: Boolean         = false,   // host waiting on game screen
 
     // Score
     val currentScore     : Int             = 0,

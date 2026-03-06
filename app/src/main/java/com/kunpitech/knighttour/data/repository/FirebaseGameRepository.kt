@@ -1,0 +1,513 @@
+package com.kunpitech.knighttour.data.repository
+
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
+import com.kunpitech.knighttour.domain.model.Position
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.tasks.await
+import javax.inject.Inject
+import javax.inject.Singleton
+
+// ================================================================
+//  FIREBASE GAME REPOSITORY
+//
+//  RTDB structure:
+//
+//  rooms/{roomCode}/
+//    status          : "WAITING" | "PLAYING" | "FINISHED"
+//    hostId          : String
+//    guestId         : String
+//    boardSize       : Int       (set by host, 6 for MEDIUM ONLINE)
+//    createdAt       : Long
+//    host/
+//      name          : String
+//      moveCount     : Int
+//      lastMove      : {row, col}
+//      moveHistory   : [{row,col}, ...]
+//      isConnected   : Boolean
+//      finishedAt    : Long?
+//    guest/
+//      name          : String
+//      moveCount     : Int
+//      lastMove      : {row, col}
+//      moveHistory   : [{row,col}, ...]
+//      isConnected   : Boolean
+//      finishedAt    : Long?
+//
+//  Package: data/repository/FirebaseGameRepository.kt
+// ================================================================
+
+// ── Data transfer objects ────────────────────────────────────────
+
+data class RoomDto(
+    val status    : String           = "WAITING",
+    val hostId    : String           = "",
+    val guestId   : String           = "",
+    val boardSize : Int              = 6,
+    val createdAt : Long             = 0L,
+    val host      : PlayerStateDto   = PlayerStateDto(),
+    val guest     : PlayerStateDto   = PlayerStateDto(),
+)
+
+data class PlayerStateDto(
+    val name         : String             = "",
+    val moveCount    : Int                = 0,
+    val lastMove     : MoveDto?           = null,
+    val moveHistory  : List<MoveDto>      = emptyList(),
+    val isConnected  : Boolean            = true,
+    val finishedAt   : Long               = 0L,
+)
+
+data class MoveDto(
+    val row : Int = 0,
+    val col : Int = 0,
+)
+
+fun MoveDto.toPosition() = Position(row, col)
+fun Position.toDto()     = MoveDto(row, col)
+
+// ── Repository ───────────────────────────────────────────────────
+
+@Singleton
+class FirebaseGameRepository @Inject constructor() {
+
+    private val db = FirebaseDatabase.getInstance("https://knight-tour-58864-default-rtdb.asia-southeast1.firebasedatabase.app")
+
+    private fun roomRef(roomCode: String) =
+        db.getReference("rooms/$roomCode")
+
+    private fun playerRef(roomCode: String, role: String) =
+        db.getReference("rooms/$roomCode/$role")
+
+    // ── Room lifecycle ───────────────────────────────────────────
+
+    /** Create a new room as host. Returns the room code. */
+    suspend fun createRoom(
+        roomCode  : String,
+        hostId    : String,
+        hostName  : String,
+        boardSize : Int = 6,
+    ) {
+        val room = mapOf(
+            "status"    to "WAITING",
+            "hostId"    to hostId,
+            "guestId"   to "",
+            "boardSize" to boardSize,
+            "createdAt" to System.currentTimeMillis(),
+            "host"      to mapOf(
+                "name"        to hostName,
+                "moveCount"   to 0,
+                "isConnected" to true,
+                "moveHistory" to emptyList<Any>(),
+                "finishedAt"  to 0L,
+            ),
+            "guest" to mapOf(
+                "name"        to "",
+                "moveCount"   to 0,
+                "isConnected" to false,
+                "moveHistory" to emptyList<Any>(),
+                "finishedAt"  to 0L,
+            ),
+        )
+        roomRef(roomCode).setValue(room).await()
+    }
+
+    /** Join an existing room as guest. Returns true if room exists and is WAITING. */
+    suspend fun joinRoom(
+        roomCode  : String,
+        guestId   : String,
+        guestName : String,
+    ): Boolean {
+        val snapshot = roomRef(roomCode).get().await()
+        if (!snapshot.exists()) return false
+        val status = snapshot.child("status").getValue(String::class.java)
+        if (status != "WAITING") return false
+
+        roomRef(roomCode).updateChildren(mapOf(
+            "guestId"          to guestId,
+            "status"           to "PLAYING",
+            "guest/name"       to guestName,
+            "guest/isConnected" to true,
+        )).await()
+        return true
+    }
+
+    /** Set room status to PLAYING (called by host when guest joins). */
+    suspend fun setRoomPlaying(roomCode: String) {
+        roomRef(roomCode).child("status").setValue("PLAYING").await()
+    }
+
+    /** Set room status to FINISHED. */
+    suspend fun setRoomFinished(roomCode: String) {
+        roomRef(roomCode).child("status").setValue("FINISHED").await()
+    }
+
+    /** Delete a room (cleanup after game ends). */
+    suspend fun deleteRoom(roomCode: String) {
+        roomRef(roomCode).removeValue().await()
+    }
+
+    // ── Move sync ────────────────────────────────────────────────
+
+    /** Push a move for the given player role ("host" or "guest"). */
+    suspend fun pushMove(
+        roomCode : String,
+        role     : String,
+        position : Position,
+        history  : List<Position>,
+    ) {
+        val historyDto = history.map { mapOf("row" to it.row, "col" to it.col) }
+        playerRef(roomCode, role).updateChildren(mapOf(
+            "moveCount"   to history.size,
+            "lastMove"    to mapOf("row" to position.row, "col" to position.col),
+            "moveHistory" to historyDto,
+        )).await()
+    }
+
+    /** Mark player as finished with timestamp. */
+    suspend fun markFinished(roomCode: String, role: String) {
+        playerRef(roomCode, role).updateChildren(mapOf(
+            "finishedAt" to System.currentTimeMillis(),
+        )).await()
+    }
+
+    // ── Presence ─────────────────────────────────────────────────
+
+    /** Set connected flag — call on resume/pause. */
+    suspend fun setConnected(roomCode: String, role: String, connected: Boolean) {
+        playerRef(roomCode, role).child("isConnected").setValue(connected).await()
+    }
+
+    /** Register an onDisconnect handler so Firebase auto-clears presence. */
+    fun registerDisconnectHandler(roomCode: String, role: String) {
+        playerRef(roomCode, role).child("isConnected")
+            .onDisconnect().setValue(false)
+    }
+
+    // ── Observation flows ────────────────────────────────────────
+
+    /** Observe room status changes: "WAITING" | "PLAYING" | "FINISHED" */
+    fun observeRoomStatus(roomCode: String): Flow<String> = callbackFlow {
+        val ref = roomRef(roomCode).child("status")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                trySend(snap.getValue(String::class.java) ?: "WAITING")
+            }
+            override fun onCancelled(error: DatabaseError) { close() }
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
+    }
+
+    /** Observe opponent's player state (move count + history). */
+    fun observeOpponent(roomCode: String, opponentRole: String): Flow<PlayerStateDto> =
+        callbackFlow {
+            val ref = playerRef(roomCode, opponentRole)
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snap: DataSnapshot) {
+                    val dto = parsePlayerState(snap)
+                    trySend(dto)
+                }
+                override fun onCancelled(error: DatabaseError) { close() }
+            }
+            ref.addValueEventListener(listener)
+            awaitClose { ref.removeEventListener(listener) }
+        }
+
+    /** Observe the full room snapshot once (for initial load). */
+    suspend fun getRoomOnce(roomCode: String): RoomDto? {
+        val snap = roomRef(roomCode).get().await()
+        if (!snap.exists()) return null
+        return parseRoom(snap)
+    }
+
+    /** Check if a room code exists and is joinable. */
+    suspend fun isRoomJoinable(roomCode: String): Boolean {
+        val snap = roomRef(roomCode).get().await()
+        if (!snap.exists()) return false
+        val status = snap.child("status").getValue(String::class.java)
+        return status == "WAITING"
+    }
+
+    /**
+     * Observe all rooms with status = WAITING.
+     * Used by the lobby room browser to show joinable rooms in real time.
+     */
+    fun observeWaitingRooms(): Flow<List<RoomBrowserEntry>> = callbackFlow {
+        val ref = db.getReference("rooms")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snap: DataSnapshot) {
+                val rooms = snap.children.mapNotNull { roomSnap ->
+                    val status = roomSnap.child("status").getValue(String::class.java)
+                    if (status != "WAITING") return@mapNotNull null
+                    val hostName  = roomSnap.child("host/name").getValue(String::class.java) ?: return@mapNotNull null
+                    if (hostName.isEmpty()) return@mapNotNull null
+                    val roomCode  = roomSnap.key ?: return@mapNotNull null
+                    val boardSize = roomSnap.child("boardSize").getValue(Int::class.java) ?: 6
+                    val createdAt = roomSnap.child("createdAt").getValue(Long::class.java) ?: 0L
+                    RoomBrowserEntry(
+                        roomCode  = roomCode,
+                        hostName  = hostName,
+                        boardSize = boardSize,
+                        createdAt = createdAt,
+                    )
+                }.sortedByDescending { it.createdAt }
+                trySend(rooms)
+            }
+            override fun onCancelled(error: DatabaseError) {
+                // Permission denied or other error — emit empty list, do NOT crash
+                trySend(emptyList())
+            }
+        }
+        ref.addValueEventListener(listener)
+        awaitClose { ref.removeEventListener(listener) }
+    }
+
+    /**
+     * Fetch all rooms that contain a player with the given name (as host or guest).
+     * Used by leaderboard to find opponent scores.
+     */
+    suspend fun getRoomsForPlayer(playerName: String): List<RoomDto> {
+        return try {
+            val snap = db.getReference("rooms").get().await()
+            snap.children.mapNotNull { roomSnap ->
+                val room = parseRoom(roomSnap)
+                // Include rooms where this player participated
+                if (room.host.name == playerName || room.guest.name == playerName) room
+                else null
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // ── Parsers ──────────────────────────────────────────────────
+
+    private fun parseRoom(snap: DataSnapshot): RoomDto = RoomDto(
+        status    = snap.child("status").getValue(String::class.java)    ?: "WAITING",
+        hostId    = snap.child("hostId").getValue(String::class.java)    ?: "",
+        guestId   = snap.child("guestId").getValue(String::class.java)   ?: "",
+        boardSize = snap.child("boardSize").getValue(Int::class.java)    ?: 6,
+        createdAt = snap.child("createdAt").getValue(Long::class.java)   ?: 0L,
+        host      = parsePlayerState(snap.child("host")),
+        guest     = parsePlayerState(snap.child("guest")),
+    )
+
+    private fun parsePlayerState(snap: DataSnapshot): PlayerStateDto {
+        val historySnap = snap.child("moveHistory")
+        val history = historySnap.children.mapNotNull { child ->
+            val row = child.child("row").getValue(Int::class.java) ?: return@mapNotNull null
+            val col = child.child("col").getValue(Int::class.java) ?: return@mapNotNull null
+            MoveDto(row, col)
+        }
+        val lastMoveSnap = snap.child("lastMove")
+        val lastMove = if (lastMoveSnap.exists()) {
+            MoveDto(
+                row = lastMoveSnap.child("row").getValue(Int::class.java) ?: 0,
+                col = lastMoveSnap.child("col").getValue(Int::class.java) ?: 0,
+            )
+        } else null
+
+        return PlayerStateDto(
+            name        = snap.child("name").getValue(String::class.java)        ?: "",
+            moveCount   = snap.child("moveCount").getValue(Int::class.java)      ?: 0,
+            lastMove    = lastMove,
+            moveHistory = history,
+            isConnected = snap.child("isConnected").getValue(Boolean::class.java) ?: false,
+            finishedAt  = snap.child("finishedAt").getValue(Long::class.java)    ?: 0L,
+        )
+    }
+
+    // ── Leaderboard ──────────────────────────────────────────────
+
+    private fun scoresRef() = db.getReference("scores")
+    private fun playerScoreRef(playerName: String) =
+        db.getReference("scores/${sanitizeName(playerName)}")
+
+    /** Firebase keys can't contain . # $ [ ] / — replace with _ */
+    private fun sanitizeName(name: String) =
+        name.replace(Regex("[.#\$\\[\\]/]"), "_")
+
+    // ── Write ────────────────────────────────────────────────────
+
+    /**
+     * Save a completed game score to Firebase.
+     * Updates bestScore if this is a personal best.
+     */
+    suspend fun saveScore(
+        playerName    : String,
+        sessionId     : String,
+        score         : Int,
+        boardSize     : Int,
+        elapsedSeconds: Int,
+        finishedAt    : Long,
+        rankLabel     : String,
+    ) {
+        val mins      = elapsedSeconds / 60
+        val secs      = elapsedSeconds % 60
+        val timeStr   = "%d:%02d".format(mins, secs)
+        val boardLabel = "${boardSize}×${boardSize}"
+        val safeName  = sanitizeName(playerName)
+
+        // Write history entry
+        val historyData = mapOf(
+            "score"          to score,
+            "boardSize"      to boardSize,
+            "boardLabel"     to boardLabel,
+            "elapsedSeconds" to elapsedSeconds,
+            "timeStr"        to timeStr,
+            "finishedAt"     to finishedAt,
+            "rankLabel"      to rankLabel,
+            "playerName"     to playerName,
+        )
+        db.getReference("scores/$safeName/history/$sessionId")
+            .setValue(historyData).await()
+
+        // Update bestScore if new personal best
+        val currentBest = db.getReference("scores/$safeName/bestScore")
+            .get().await().getValue(Int::class.java) ?: 0
+        if (score > currentBest) {
+            db.getReference("scores/$safeName/bestScore").setValue(score).await()
+        }
+
+        // Increment gamesPlayed
+        db.getReference("scores/$safeName/gamesPlayed")
+            .get().await().let { snap ->
+                val current = snap.getValue(Int::class.java) ?: 0
+                db.getReference("scores/$safeName/gamesPlayed").setValue(current + 1).await()
+            }
+    }
+
+    // ── Read ─────────────────────────────────────────────────────
+
+    /**
+     * Fetch global leaderboard — one entry per player (their best score).
+     * Returns top [limit] players sorted by bestScore descending.
+     */
+    suspend fun getGlobalLeaderboard(limit: Int = 50): List<FirebaseScoreEntry> {
+        return try {
+            val snap = scoresRef().get().await()
+            snap.children.mapNotNull { playerSnap ->
+                val playerName = playerSnap.child("playerName").getValue(String::class.java)
+                    ?: playerSnap.key?.replace("_", " ") ?: return@mapNotNull null
+                val bestScore  = playerSnap.child("bestScore").getValue(Int::class.java) ?: 0
+                val gamesPlayed = playerSnap.child("gamesPlayed").getValue(Int::class.java) ?: 0
+
+                // Get their best game details
+                val bestGame = playerSnap.child("history").children
+                    .mapNotNull { parseHistoryEntry(it) }
+                    .maxByOrNull { it.score }
+
+                FirebaseScoreEntry(
+                    playerName    = playerName,
+                    score         = bestScore,
+                    boardLabel    = bestGame?.boardLabel ?: "—",
+                    timeStr       = bestGame?.timeStr ?: "—",
+                    rankLabel     = bestGame?.rankLabel ?: "SQUIRE",
+                    gamesPlayed   = gamesPlayed,
+                    finishedAt    = bestGame?.finishedAt ?: 0L,
+                )
+            }
+                .filter { it.score > 0 }
+                .sortedByDescending { it.score }
+                .take(limit)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Fetch full score history for one player (My Stats tab).
+     */
+    suspend fun getPlayerHistory(playerName: String): List<FirebaseScoreEntry> {
+        return try {
+            val safeName = sanitizeName(playerName)
+            val snap = db.getReference("scores/$safeName/history").get().await()
+            snap.children.mapNotNull { parseHistoryEntry(it) }
+                .sortedByDescending { it.finishedAt }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Fetch scores of opponents this player has faced in rooms.
+     * Looks up each opponent's best score from the scores node.
+     */
+    suspend fun getFriendScores(playerName: String): List<FirebaseScoreEntry> {
+        return try {
+            // Get all rooms this player was in
+            val rooms = getRoomsForPlayer(playerName)
+            val opponentNames = rooms.mapNotNull { room ->
+                when {
+                    room.host.name  == playerName -> room.guest.name.ifEmpty { null }
+                    room.guest.name == playerName -> room.host.name.ifEmpty  { null }
+                    else -> null
+                }
+            }.distinct()
+
+            if (opponentNames.isEmpty()) return emptyList()
+
+            // Fetch best score for each opponent
+            opponentNames.mapNotNull { opponent ->
+                val safeName = sanitizeName(opponent)
+                val snap = db.getReference("scores/$safeName").get().await()
+                val bestScore = snap.child("bestScore").getValue(Int::class.java) ?: 0
+                if (bestScore == 0) return@mapNotNull null
+
+                val bestGame = snap.child("history").children
+                    .mapNotNull { parseHistoryEntry(it) }
+                    .maxByOrNull { it.score }
+
+                FirebaseScoreEntry(
+                    playerName  = opponent,
+                    score       = bestScore,
+                    boardLabel  = bestGame?.boardLabel ?: "—",
+                    timeStr     = bestGame?.timeStr    ?: "—",
+                    rankLabel   = bestGame?.rankLabel  ?: "SQUIRE",
+                    gamesPlayed = snap.child("gamesPlayed").getValue(Int::class.java) ?: 0,
+                    finishedAt  = bestGame?.finishedAt ?: 0L,
+                )
+            }
+                .sortedByDescending { it.score }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    // ── DTOs ─────────────────────────────────────────────────────
+
+    private fun parseHistoryEntry(snap: DataSnapshot): FirebaseScoreEntry? {
+        val score = snap.child("score").getValue(Int::class.java) ?: return null
+        return FirebaseScoreEntry(
+            playerName  = snap.child("playerName").getValue(String::class.java) ?: "",
+            score       = score,
+            boardLabel  = snap.child("boardLabel").getValue(String::class.java) ?: "—",
+            timeStr     = snap.child("timeStr").getValue(String::class.java)    ?: "—",
+            rankLabel   = snap.child("rankLabel").getValue(String::class.java)  ?: "SQUIRE",
+            gamesPlayed = 1,
+            finishedAt  = snap.child("finishedAt").getValue(Long::class.java)   ?: 0L,
+        )
+    }
+}
+
+data class RoomBrowserEntry(
+    val roomCode  : String,
+    val hostName  : String,
+    val boardSize : Int,
+    val createdAt : Long,
+)
+
+data class FirebaseScoreEntry(
+    val playerName  : String,
+    val score       : Int,
+    val boardLabel  : String,
+    val timeStr     : String,
+    val rankLabel   : String,
+    val gamesPlayed : Int,
+    val finishedAt  : Long,
+)

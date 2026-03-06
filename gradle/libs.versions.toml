@@ -23,6 +23,7 @@ junitJupiter = "5.14.0"
 datastorePrefs = "1.1.1"
 googleGmsGoogleServices = "4.4.4"
 firebaseDatabase = "22.0.1"
+material3 = "1.4.0"
 
 [libraries]
 androidx-compose-ui-text-google-fonts = { module = "androidx.compose.ui:ui-text-google-fonts", version.ref = "uiTextGoogleFonts" }
@@ -59,6 +60,7 @@ junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.r
 
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePrefs" }
 firebase-database = { group = "com.google.firebase", name = "firebase-database", version.ref = "firebaseDatabase" }
+androidx-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

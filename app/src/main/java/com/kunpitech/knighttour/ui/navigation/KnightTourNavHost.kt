@@ -130,16 +130,16 @@ fun KnightTourNavHost(
             )
         }
 
-        // ── LOBBY (stub — Phase 4) ────────────────────────────────
+        // ── LOBBY ────────────────────────────────────────────────
         composable(Screen.Lobby.route) {
-            // LobbyRoute(
-            //     onGameStart    = { roomCode ->
-            //         navController.navigate(
-            //             Screen.Game.createRoute(gameMode = "ONLINE", roomCode = roomCode)
-            //         )
-            //     },
-            //     onNavigateBack = { navController.popBackStack() },
-            // )
+            com.kunpitech.knighttour.ui.screen.lobby.LobbyRoute(
+                onGameStart = { roomCode ->
+                    navController.navigate(
+                        Screen.Game.createRoute(gameMode = "ONLINE", roomCode = roomCode)
+                    )
+                },
+                onNavigateBack = { navController.popBackStack() },
+            )
         }
 
         // ── RESULT ───────────────────────────────────────────────

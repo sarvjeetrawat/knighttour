@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -57,6 +58,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.text.font.FontFamily
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kunpitech.knighttour.ui.theme.AbyssBlack
@@ -88,6 +91,7 @@ import com.kunpitech.knighttour.ui.theme.TextSecondary
 import com.kunpitech.knighttour.ui.theme.TextTertiary
 import com.kunpitech.knighttour.ui.theme.WarningAmber
 import com.kunpitech.knighttour.ui.theme.knightType
+import kotlinx.coroutines.delay
 
 // ═══════════════════════════════════════════════════════════════
 //  KNIGHT TOUR — GAME SCREEN
@@ -121,7 +125,7 @@ fun GameScreen(
     // Auto-navigate to result after victory animation
     LaunchedEffect(uiState.gameState) {
         if (uiState.gameState == GamePhase.COMPLETED) {
-            kotlinx.coroutines.delay(2000L)
+            delay(2000L)
             onNavigateResult()
         }
     }
@@ -246,8 +250,18 @@ fun GameScreen(
         }
 
         // ── OVERLAYS ─────────────────────────────────────────────
+
+        // Online host waiting overlay — shown until opponent joins
         AnimatedVisibility(
-            visible = uiState.gameState == GamePhase.PAUSED,
+            visible = uiState.waitingForOpponent,
+            enter   = fadeIn(),
+            exit    = fadeOut(tween(400)),
+        ) {
+            WaitingForOpponentOverlay(roomCode = uiState.roomCode)
+        }
+
+        AnimatedVisibility(
+            visible = uiState.gameState == GamePhase.PAUSED && !uiState.waitingForOpponent,
             enter   = fadeIn() + scaleIn(initialScale = 0.88f),
             exit    = fadeOut() + scaleOut(targetScale = 0.88f),
         ) {
@@ -978,6 +992,74 @@ private fun ActionButton(
 //  PAUSE OVERLAY
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+//  WAITING FOR OPPONENT OVERLAY
+//  Shown on game screen for HOST until guest joins the room.
+// ═══════════════════════════════════════════════════════════════
+
+@Composable
+private fun WaitingForOpponentOverlay(roomCode: String) {
+    val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
+        initialValue  = 0.4f,
+        targetValue   = 1.0f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label         = "pulseAlpha",
+    )
+    Box(
+        modifier         = Modifier
+            .fillMaxSize()
+            .background(Scrim),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier            = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 40.dp)
+                .background(SurfaceDark, KnightTourShapes.medium)
+                .border(BorderWidth.default, OnlineTeal.copy(alpha = 0.5f), KnightTourShapes.medium)
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text  = "🌐",
+                fontSize = 36.sp,
+            )
+            Text(
+                text  = "SHARE THIS CODE",
+                style = MaterialTheme.knightType.StatLabel.copy(letterSpacing = 3.sp),
+                color = TextTertiary,
+            )
+            Text(
+                text      = roomCode.chunked(3).joinToString("  "),
+                style     = MaterialTheme.knightType.GameTitle.copy(
+                    fontSize      = 40.sp,
+                    letterSpacing = 6.sp,
+                    fontFamily    = FontFamily.Monospace,
+                ),
+                color     = OnlineTeal,
+                textAlign = TextAlign.Center,
+            )
+            Row(
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier              = Modifier.alpha(pulse),
+            ) {
+                CircularProgressIndicator(
+                    modifier    = Modifier.size(14.dp),
+                    color       = OnlineTeal,
+                    strokeWidth = 2.dp,
+                )
+                Text(
+                    text  = "Waiting for opponent…",
+                    style = MaterialTheme.knightType.BodySecondary,
+                    color = OnlineTeal,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun PauseOverlay(
     onResume  : () -> Unit,
@@ -1210,6 +1292,11 @@ fun GameRoute(
 ) {
     val uiState   by viewModel.uiState.collectAsStateWithLifecycle()
     val sessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
+
+    // Clean up online room when leaving the game screen for any reason
+    DisposableEffect(Unit) {
+        onDispose { viewModel.onLeaveOnlineGame() }
+    }
 
     GameScreen(
         uiState          = uiState,

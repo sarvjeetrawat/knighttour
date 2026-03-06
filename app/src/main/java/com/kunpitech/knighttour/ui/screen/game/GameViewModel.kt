@@ -3,6 +3,9 @@ package com.kunpitech.knighttour.ui.screen.game
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kunpitech.knighttour.data.online.OnlineRole
+import com.kunpitech.knighttour.data.online.OnlineSessionManager
+import com.kunpitech.knighttour.data.online.RoomEvent
 import com.kunpitech.knighttour.domain.model.Difficulty
 import com.kunpitech.knighttour.domain.model.GameMode
 import com.kunpitech.knighttour.domain.model.GameSession
@@ -19,6 +22,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -45,7 +51,9 @@ class GameViewModel @Inject constructor(
     private val getHint           : GetHintUseCase,
     private val tickTimer         : TickTimerUseCase,
     private val gameRepository    : com.kunpitech.knighttour.data.repository.GameRepository,
+    private val scoreRepository   : com.kunpitech.knighttour.data.repository.ScoreRepository,
     private val prefsRepository   : com.kunpitech.knighttour.data.repository.UserPreferencesRepository,
+    private val sessionManager    : OnlineSessionManager,
 ) : ViewModel() {
 
     private val _uiState: MutableStateFlow<GameUiState> =
@@ -65,10 +73,21 @@ class GameViewModel @Inject constructor(
         val modeStr   = savedStateHandle.get<String>("gameMode")   ?: "OFFLINE"
         val roomCode  = savedStateHandle.get<String>("roomCode")   ?: ""
 
-        val difficulty: Difficulty = Difficulty.entries
-            .find { it.name == diffStr } ?: Difficulty.MEDIUM
         val mode: GameMode = GameMode.entries
             .find { it.name == modeStr } ?: GameMode.OFFLINE
+
+        val difficulty: Difficulty = if (mode == GameMode.ONLINE) {
+            // For online games, board size comes from Firebase room via OnlineSessionManager
+            val onlineSize = sessionManager.currentSession()?.boardSize ?: 6
+            when (onlineSize) {
+                5    -> Difficulty.EASY
+                8    -> Difficulty.HARD
+                10   -> Difficulty.DEVIL
+                else -> Difficulty.MEDIUM   // 6×6
+            }
+        } else {
+            Difficulty.entries.find { it.name == diffStr } ?: Difficulty.MEDIUM
+        }
 
         if (sessionId.isNotEmpty()) {
             resumeSession(sessionId, difficulty, mode, roomCode)
@@ -87,6 +106,20 @@ class GameViewModel @Inject constructor(
                     )
                 }
             }
+        }
+
+        // Online: observe opponent state from Firebase
+        if (mode == GameMode.ONLINE) {
+            // Host starts in waiting state; guest starts playing immediately
+            val isHost = sessionManager.localRole() == OnlineRole.HOST
+            if (isHost) {
+                _uiState.update { it.copy(
+                    waitingForOpponent = true,
+                    gameState = GamePhase.PAUSED,  // pause timer until opponent joins
+                ) }
+            }
+            observeOnlineOpponent()
+            observeRoomEvents()
         }
     }
 
@@ -161,18 +194,25 @@ class GameViewModel @Inject constructor(
                 session = result.session
                 _uiState.value = result.session.toUiState()
                 autoSave(result.session)
+                pushOnlineMove(result.session)
             }
             is MakeMoveUseCase.MoveResult.Victory -> {
                 timerJob?.cancel()
                 session = result.session
                 _uiState.value = result.session.toUiState()
-                autoSave(result.session)
+                // Save synchronously — ResultViewModel reads this session 2s later
+                viewModelScope.launch {
+                    gameRepository.save(result.session)
+                    pushOnlineMove(result.session)
+                    sessionManager.markLocalFinished()
+                }
             }
             is MakeMoveUseCase.MoveResult.DeadEnd -> {
                 timerJob?.cancel()
                 session = result.session
                 _uiState.value = result.session.toUiState()
                 autoSave(result.session)
+                viewModelScope.launch { sessionManager.markLocalFinished() }
             }
             is MakeMoveUseCase.MoveResult.Invalid -> {
                 if (result.reason == MakeMoveUseCase.InvalidReason.NOT_L_MOVE) {
@@ -292,6 +332,72 @@ class GameViewModel @Inject constructor(
     // ============================================================
     //  SESSION -> UI STATE MAPPING
     // ============================================================
+
+    // ============================================================
+    //  ONLINE SYNC
+    // ============================================================
+
+    /** Push the latest move to Firebase (no-op if offline). */
+    private fun pushOnlineMove(s: GameSession) {
+        if (!_uiState.value.isOnlineMode) return
+        val knightPos = s.board.knightPosition ?: return
+        val history   = s.board.moveHistory.map { it }
+        viewModelScope.launch {
+            sessionManager.pushMove(knightPos, history)
+        }
+    }
+
+    /** Observe opponent's move count and update the opponent progress bar. */
+    private fun observeOnlineOpponent() {
+        sessionManager.opponentState
+            .onEach { state ->
+                state ?: return@onEach
+                val opp       = sessionManager.currentSession() ?: return@onEach
+                val totalCells = opp.boardSize * opp.boardSize
+                val progress  = state.moveCount.toFloat() / totalCells.toFloat()
+                _uiState.update { it.copy(
+                    opponentName     = state.name.ifEmpty { opp.opponentName },
+                    opponentMoves    = state.moveCount,
+                    opponentProgress = progress.coerceIn(0f, 1f),
+                ) }
+            }
+            .launchIn(viewModelScope)
+    }
+
+    /** Observe room-level events: opponent disconnected / game finished. */
+    private fun observeRoomEvents() {
+        sessionManager.roomEvents
+            .onEach { event ->
+                when (event) {
+                    is RoomEvent.OpponentJoined -> {
+                        // Host was waiting — opponent arrived, start the game
+                        _uiState.update { it.copy(
+                            waitingForOpponent = false,
+                            opponentName       = event.name,
+                            gameState          = GamePhase.PLAYING,
+                        ) }
+                        startTimer()
+                    }
+                    is RoomEvent.OpponentDisconnected ->
+                        _uiState.update { it.copy(opponentName = "${it.opponentName} (disconnected)") }
+                    is RoomEvent.OpponentReconnected  ->
+                        _uiState.update { it.copy(
+                            opponentName = sessionManager.currentSession()?.opponentName ?: it.opponentName
+                        ) }
+                    RoomEvent.GameFinished ->
+                        _uiState.update { it.copy(gameState = GamePhase.COMPLETED) }
+                    else -> Unit
+                }
+            }
+            .launchIn(viewModelScope)
+    }
+
+    /** Call when leaving the game screen — cleans up Firebase listeners. */
+    fun onLeaveOnlineGame() {
+        if (_uiState.value.isOnlineMode) {
+            viewModelScope.launch { sessionManager.endSession() }
+        }
+    }
 
     private fun GameSession.toUiState(): GameUiState {
         val knightPos = board.knightPosition

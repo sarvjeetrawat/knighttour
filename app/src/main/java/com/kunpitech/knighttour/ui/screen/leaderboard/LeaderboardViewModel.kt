@@ -2,121 +2,122 @@ package com.kunpitech.knighttour.ui.screen.leaderboard
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.kunpitech.knighttour.data.repository.ScoreRepository
-import com.kunpitech.knighttour.data.repository.ScoreSummary
+import com.kunpitech.knighttour.data.repository.FirebaseGameRepository
+import com.kunpitech.knighttour.data.repository.FirebaseScoreEntry
+import com.kunpitech.knighttour.data.repository.UserPreferencesRepository
 import com.kunpitech.knighttour.domain.engine.ScoreCalculator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-// ===============================================================
-//  LEADERBOARD VIEWMODEL — wired to ScoreRepository
+// ================================================================
+//  LEADERBOARD VIEWMODEL — fully Firebase-based
 //
-//  GLOBAL tab  : top 50 local scores (all board sizes, best first)
-//  FRIENDS tab : stub until Firebase friends list is implemented
-//  MY BESTS tab: personal bests per board size from Room DB
-// ===============================================================
+//  GLOBAL   : one entry per unique player, best score only
+//  FRIENDS  : players you've faced in online rooms, best score each
+//  MY STATS : your full game history, all games
+// ================================================================
 
 @HiltViewModel
 class LeaderboardViewModel @Inject constructor(
-    private val scoreRepository : ScoreRepository,
+    private val firebaseRepo    : FirebaseGameRepository,
+    private val prefsRepository : UserPreferencesRepository,
     private val scoreCalculator : ScoreCalculator,
 ) : ViewModel() {
 
-    private val _uiState: MutableStateFlow<LeaderboardUiState> =
-        MutableStateFlow(LeaderboardUiState(isLoading = true))
+    private val _uiState = MutableStateFlow(LeaderboardUiState(isLoading = true))
     val uiState: StateFlow<LeaderboardUiState> = _uiState.asStateFlow()
 
     init {
-        observeScores()
+        loadAll()
     }
 
     fun onEvent(event: LeaderboardEvent) {
         when (event) {
             is LeaderboardEvent.TabSelected -> _uiState.update { it.copy(selectedTab = event.tab) }
-            LeaderboardEvent.Refresh        -> Unit   // flows auto-refresh from Room
-            LeaderboardEvent.NavigateBack   -> Unit   // handled by composable
+            LeaderboardEvent.Refresh        -> loadAll()
+            LeaderboardEvent.NavigateBack   -> Unit
         }
     }
 
-    // ── Observe both flows and merge into UI state ────────────────
+    // ── Load all three tabs concurrently ─────────────────────────
 
-    private fun observeScores() {
-        combine(
-            scoreRepository.getTopScores(limit = 50),
-            scoreRepository.getPersonalBests(),
-        ) { topScores, personalBests ->
-            Pair(topScores, personalBests)
-        }
-            .catch { e ->
-                _uiState.update { it.copy(isLoading = false, error = e.message) }
-            }
-            .onEach { (topScores, personalBests) ->
-                val playerName = personalBests.firstOrNull()?.playerName ?: "You"
+    private fun loadAll() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
+            try {
+                val playerName = prefsRepository.preferences.first().playerName
 
-                // ── Global entries ────────────────────────────────
-                val globalEntries = topScores.mapIndexed { idx, summary ->
-                    summary.toEntry(
-                        rank         = idx + 1,
-                        playerName   = if (summary.playerName == playerName) "You" else summary.playerName,
-                        isCurrentUser = summary.playerName == playerName,
+                // Load all three in parallel
+                val globalDeferred  = async { firebaseRepo.getGlobalLeaderboard(50) }
+                val friendsDeferred = async { firebaseRepo.getFriendScores(playerName) }
+                val historyDeferred = async { firebaseRepo.getPlayerHistory(playerName) }
+
+                val globalRaw  = globalDeferred.await()
+                val friendsRaw = friendsDeferred.await()
+                val historyRaw = historyDeferred.await()
+
+                // ── Global: one row per player, best score ────────
+                val globalEntries = globalRaw.mapIndexed { idx, entry ->
+                    entry.toLeaderboardEntry(
+                        rank          = idx + 1,
+                        isCurrentUser = entry.playerName == playerName,
                     )
                 }
 
-                // ── Personal bests entries ────────────────────────
-                val personalEntries = personalBests.mapIndexed { idx, summary ->
-                    summary.toEntry(rank = idx + 1, isCurrentUser = true)
+                // Current user's rank and best score in global
+                val userRank  = globalEntries.indexOfFirst { it.isCurrentUser }
+                    .takeIf { it >= 0 }?.plus(1) ?: 0
+                val userScore = globalRaw.find { it.playerName == playerName }?.score ?: 0
+
+                // ── Friends: best score per opponent ──────────────
+                val friendEntries = friendsRaw.mapIndexed { idx, entry ->
+                    entry.toLeaderboardEntry(rank = idx + 1, isCurrentUser = false)
                 }
 
-                // Current user's best score and rank position in global
-                val userBest = personalBests.maxByOrNull { it.score }
-                val userRank = globalEntries.indexOfFirst { it.isCurrentUser }
-                    .takeIf { it >= 0 }?.plus(1) ?: 0
+                // ── My Stats: full history newest first ───────────
+                val myEntries = historyRaw.mapIndexed { idx, entry ->
+                    entry.toLeaderboardEntry(rank = idx + 1, isCurrentUser = true)
+                }
 
-                _uiState.update { state ->
-                    state.copy(
+                _uiState.update {
+                    it.copy(
                         globalEntries    = globalEntries,
-                        friendEntries    = globalEntries,   // Phase 4: filter by Firebase friends list
-                        personalBests    = personalEntries,
+                        friendEntries    = friendEntries,
+                        myStatsEntries   = myEntries,
                         currentUserRank  = userRank,
-                        currentUserScore = userBest?.score ?: 0,
+                        currentUserScore = userScore,
                         isLoading        = false,
                         error            = null,
                     )
                 }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        error     = "Failed to load leaderboard. Check your connection.",
+                    )
+                }
             }
-            .launchIn(viewModelScope)
+        }
     }
 
-    // ── Mappers ───────────────────────────────────────────────────
-
-    private fun ScoreSummary.toEntry(
-        rank         : Int,
-        playerName   : String = this.playerName,
-        isCurrentUser: Boolean = false,
-    ): LeaderboardEntry {
-        val mins = elapsedSeconds / 60
-        val secs = elapsedSeconds % 60
-        val timeStr = "%d:%02d".format(mins, secs)
-
-        val rankInfo = scoreCalculator.rankInfo(score)
-
-        return LeaderboardEntry(
-            rank         = rank,
-            playerName   = playerName,
-            score        = score,
-            boardLabel   = "${boardSize}x${boardSize}",
-            timeStr      = timeStr,
-            rankLabel    = rankInfo.label,
-            isCurrentUser = isCurrentUser,
-        )
-    }
-
+    private fun FirebaseScoreEntry.toLeaderboardEntry(
+        rank          : Int,
+        isCurrentUser : Boolean,
+    ) = LeaderboardEntry(
+        rank          = rank,
+        playerName    = playerName,
+        score         = score,
+        boardLabel    = boardLabel,
+        timeStr       = timeStr,
+        rankLabel     = rankLabel,
+        isCurrentUser = isCurrentUser,
+    )
 }

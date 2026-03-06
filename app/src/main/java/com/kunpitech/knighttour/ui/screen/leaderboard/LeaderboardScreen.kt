@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -82,11 +83,11 @@ import kotlinx.coroutines.delay
 //
 //  Layout:
 //    TopBar: back + title + refresh
-//    TabRow: GLOBAL / FRIENDS / MY BESTS
+//    TabRow: GLOBAL / FRIENDS / MY STATS
 //    [GLOBAL/FRIENDS] Podium (top 3 special display)
 //                     Ranked list (4..N, staggered fade-in)
 //                     Your rank sticky footer
-//    [MY BESTS]       Personal best cards per board size
+//    [MY STATS]       Your full game history
 // ===============================================================
 
 @Composable
@@ -119,7 +120,7 @@ fun LeaderboardScreen(
     val activeEntries = when (uiState.selectedTab) {
         LeaderboardTab.GLOBAL   -> uiState.globalEntries
         LeaderboardTab.FRIENDS  -> uiState.friendEntries
-        LeaderboardTab.PERSONAL -> uiState.personalBests
+        LeaderboardTab.MY_STATS -> uiState.myStatsEntries
     }
 
     Box(
@@ -176,19 +177,34 @@ fun LeaderboardScreen(
                         .alpha(contentAlpha.value),
                 ) {
                     when (uiState.selectedTab) {
-                        LeaderboardTab.PERSONAL -> PersonalBestsTab(
-                            entries  = activeEntries,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        else -> RankedTab(
+                        LeaderboardTab.MY_STATS -> RankedTab(
                             entries    = activeEntries,
-                            showPodium = uiState.selectedTab == LeaderboardTab.GLOBAL,
+                            showPodium = false,
                             modifier   = Modifier.fillMaxSize(),
                         )
+                        else -> {
+                            when {
+                                uiState.selectedTab == LeaderboardTab.FRIENDS &&
+                                        activeEntries.isEmpty() -> {
+                                    FriendsEmptyState(modifier = Modifier.fillMaxSize())
+                                }
+                                uiState.selectedTab == LeaderboardTab.MY_STATS &&
+                                        activeEntries.isEmpty() -> {
+                                    MyStatsEmptyState(modifier = Modifier.fillMaxSize())
+                                }
+                                else -> {
+                                    RankedTab(
+                                        entries    = activeEntries,
+                                        showPodium = uiState.selectedTab == LeaderboardTab.GLOBAL,
+                                        modifier   = Modifier.fillMaxSize(),
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     // Your rank sticky footer (global + friends only)
-                    if (uiState.selectedTab != LeaderboardTab.PERSONAL &&
+                    if (uiState.selectedTab != LeaderboardTab.MY_STATS &&
                         uiState.currentUserRank > 0) {
                         YourRankFooter(
                             rank     = uiState.currentUserRank,
@@ -446,7 +462,7 @@ private fun PodiumSection(
 private fun PodiumPillar(
     entry    : LeaderboardEntry,
     position : Int,
-    pillarH  : androidx.compose.ui.unit.Dp,
+    pillarH  : Dp,
     scale    : Float,
     sparkle  : Float,
     modifier : Modifier = Modifier,
@@ -809,6 +825,56 @@ private fun PersonalBestCard(entry: LeaderboardEntry, delayMs: Int) {
 // ===============================================================
 
 @Composable
+private fun FriendsEmptyState(modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(40.dp),
+        ) {
+            Text("🌐", fontSize = 40.sp)
+            Text(
+                text      = "NO OPPONENTS YET",
+                style     = MaterialTheme.knightType.ScreenHeader.copy(fontSize = 16.sp),
+                color     = TextSecondary,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text      = "Play an online game against a friend — their scores will appear here after the match.",
+                style     = MaterialTheme.knightType.BodySecondary,
+                color     = TextTertiary,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MyStatsEmptyState(modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(40.dp),
+        ) {
+            Text("♞", fontSize = 40.sp)
+            Text(
+                text      = "NO GAMES YET",
+                style     = MaterialTheme.knightType.ScreenHeader.copy(fontSize = 16.sp),
+                color     = TextSecondary,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text      = "Complete a game to see your stats here.",
+                style     = MaterialTheme.knightType.BodySecondary,
+                color     = TextTertiary,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
 private fun LoadingState(modifier: Modifier, pulse: Float) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Column(
@@ -932,8 +998,8 @@ private fun PreviewPersonal() {
     KnightTourTheme {
         LeaderboardScreen(
             uiState = LeaderboardUiState(
-                selectedTab   = LeaderboardTab.PERSONAL,
-                personalBests = listOf(
+                selectedTab   = LeaderboardTab.MY_STATS,
+                myStatsEntries = listOf(
                     LeaderboardEntry(1, "You", 4948, "6x6",   "1:34", "KNIGHT",  isCurrentUser = true),
                     LeaderboardEntry(2, "You", 3820, "5x5",   "1:12", "SQUIRE",  isCurrentUser = true),
                     LeaderboardEntry(3, "You", 2110, "8x8",   "2:58", "NOVICE",  isCurrentUser = true),
