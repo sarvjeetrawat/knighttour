@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -257,26 +258,98 @@ private fun CreateTab(
     uiState : LobbyUiState,
     onEvent : (LobbyEvent) -> Unit,
 ) {
+    val keyboard = LocalSoftwareKeyboardController.current
+
     Column(
         modifier            = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // Board size picker
         if (!uiState.isWaiting) {
+
+            // ── Room name input ──────────────────────────────────
+            Text(
+                text  = "ROOM NAME",
+                style = MaterialTheme.knightType.StatLabel.copy(letterSpacing = 3.sp),
+                color = TextTertiary,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value         = uiState.roomNameInput,
+                onValueChange = { onEvent(LobbyEvent.RoomNameChanged(it)) },
+                modifier      = Modifier.fillMaxWidth(),
+                singleLine    = true,
+                placeholder   = {
+                    Text(
+                        text  = "e.g. 1v1 Ranked, Chill Game…",
+                        style = MaterialTheme.knightType.BodySecondary,
+                        color = TextTertiary.copy(alpha = 0.5f),
+                    )
+                },
+                textStyle = MaterialTheme.knightType.BodySecondary.copy(color = TextPrimary),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    imeAction    = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor   = OnlineTeal,
+                    unfocusedBorderColor = OnlineTeal.copy(alpha = 0.35f),
+                    focusedTextColor     = TextPrimary,
+                    unfocusedTextColor   = TextPrimary,
+                    cursorColor          = OnlineTeal,
+                ),
+            )
+            Text(
+                text  = "${uiState.roomNameInput.length} / 20",
+                style = MaterialTheme.knightType.StatLabel,
+                color = if (uiState.roomNameInput.isNotEmpty()) OnlineTeal else TextTertiary,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.End,
+            )
+
+            // ── Already have a room warning ──────────────────────
+            if (uiState.hasExistingRoom) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFE05050).copy(alpha = 0.08f), KnightTourShapes.medium)
+                        .border(BorderWidth.thin, Color(0xFFE05050).copy(alpha = 0.3f), KnightTourShapes.medium)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment     = Alignment.CenterVertically,
+                ) {
+                    Text("⚠", fontSize = 16.sp)
+                    Column {
+                        Text(
+                            text  = "You already have an open room",
+                            style = MaterialTheme.knightType.CardTitle.copy(fontSize = 13.sp),
+                            color = Color(0xFFE05050),
+                        )
+                        Text(
+                            text  = "Close your existing room first, or join via Browse.",
+                            style = MaterialTheme.knightType.StatLabel,
+                            color = Color(0xFFE05050).copy(alpha = 0.7f),
+                        )
+                    }
+                }
+            }
+
+            // ── Board size picker ────────────────────────────────
             SizePickerCard(
                 selectedSize = uiState.selectedSize,
                 onSelect     = { onEvent(LobbyEvent.BoardSizeSelected(it)) },
             )
 
-            // How it works
-            HowItWorksCard()
-
-            // Create button
+            // ── Create button ────────────────────────────────────
             LobbyButton(
                 label     = if (uiState.isCreating) "CREATING…" else "CREATE ROOM",
                 color     = OnlineTeal,
                 isLoading = uiState.isCreating,
-                onClick   = { onEvent(LobbyEvent.CreateRoom) },
+                enabled   = uiState.roomNameInput.isNotEmpty() && !uiState.isCreating,
+                onClick   = {
+                    keyboard?.hide()
+                    onEvent(LobbyEvent.CreateRoom)
+                },
             )
         } else {
             WaitingCard(
@@ -319,7 +392,7 @@ private fun JoinTab(
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "Ask your friend to share their 6-digit room code, then enter it below.",
+                    "Enter your friend's room code (their player name).",
                     style = MaterialTheme.knightType.BodySecondary,
                     color = TextSecondary,
                 )
@@ -342,30 +415,30 @@ private fun JoinTab(
             singleLine    = true,
             placeholder   = {
                 Text(
-                    text      = "_ _ _ _ _ _",
+                    text      = "PLAYERNAME",
                     style     = MaterialTheme.knightType.GameTitle.copy(
-                        letterSpacing = 10.sp,
+                        letterSpacing = 4.sp,
                         fontFamily    = FontFamily.Monospace,
                     ),
-                    color     = TextTertiary,
+                    color     = TextTertiary.copy(alpha = 0.4f),
                     modifier  = Modifier.fillMaxWidth(),
                     textAlign = TextAlign.Center,
                 )
             },
             textStyle = MaterialTheme.knightType.GameTitle.copy(
-                letterSpacing = 10.sp,
+                letterSpacing = 4.sp,
                 textAlign     = TextAlign.Center,
                 fontFamily    = FontFamily.Monospace,
                 color         = OnlineTeal,
             ),
             keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Number,
+                keyboardType = KeyboardType.Text,
                 imeAction    = ImeAction.Done,
             ),
             keyboardActions = KeyboardActions(
                 onDone = {
                     keyboard?.hide()
-                    if (uiState.joinCodeInput.length == 6) onEvent(LobbyEvent.JoinRoom)
+                    if (uiState.joinCodeInput.isNotEmpty()) onEvent(LobbyEvent.JoinRoom)
                 }
             ),
             colors = OutlinedTextFieldDefaults.colors(
@@ -377,20 +450,11 @@ private fun JoinTab(
             ),
         )
 
-        // Character count hint
-        Text(
-            text     = "${uiState.joinCodeInput.length} / 6",
-            style    = MaterialTheme.knightType.StatLabel,
-            color    = if (uiState.joinCodeInput.length == 6) OnlineTeal else TextTertiary,
-            modifier = Modifier.fillMaxWidth(),
-            textAlign = TextAlign.End,
-        )
-
         LobbyButton(
             label     = if (uiState.isJoining) "JOINING…" else "JOIN ROOM",
             color     = OnlineTeal,
             isLoading = uiState.isJoining,
-            enabled   = uiState.joinCodeInput.length == 6 && !uiState.isJoining,
+            enabled   = uiState.joinCodeInput.isNotEmpty() && !uiState.isJoining,
             onClick   = {
                 keyboard?.hide()
                 onEvent(LobbyEvent.JoinRoom)
@@ -487,7 +551,7 @@ private fun HowItWorksCard() {
             Spacer(Modifier.height(2.dp))
             listOf(
                 "1. Choose board size and tap CREATE ROOM",
-                "2. Share the 6-digit code with your opponent",
+                "2. Share your room code (your player name) with your opponent",
                 "3. Opponent taps JOIN ROOM and enters the code",
                 "4. Both race to visit all squares",
                 "5. More moves in less time = higher score",
@@ -644,17 +708,23 @@ private fun RoomCard(
                     .background(dotColor.copy(alpha = pulse), CircleShape)
             )
 
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment     = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text  = room.hostName,
-                        style = MaterialTheme.knightType.CardTitle,
-                        color = if (isDisconnected) TextTertiary else TextPrimary,
+                        text     = room.roomName,
+                        style    = MaterialTheme.knightType.CardTitle,
+                        color    = if (isDisconnected) TextTertiary else TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
-                    // "YOU" badge on own room
+                    // "YOUR ROOM" badge on own room
                     if (room.isOwn) {
                         Box(
                             modifier = Modifier
@@ -670,7 +740,7 @@ private fun RoomCard(
                     }
                 }
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment     = Alignment.CenterVertically,
                 ) {
                     Box(
@@ -685,9 +755,11 @@ private fun RoomCard(
                         )
                     }
                     Text(
-                        text  = if (isDisconnected) "⚠ host left" else waitingSince,
-                        style = MaterialTheme.knightType.StatLabel,
-                        color = if (isDisconnected) Color(0xFFE05050).copy(alpha = 0.7f) else TextTertiary,
+                        text     = if (isDisconnected) "⚠ host left" else "by ${room.hostName}  ·  $waitingSince",
+                        style    = MaterialTheme.knightType.StatLabel,
+                        color    = if (isDisconnected) Color(0xFFE05050).copy(alpha = 0.7f) else TextTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

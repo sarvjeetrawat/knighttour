@@ -112,15 +112,44 @@ class GameViewModel @Inject constructor(
 
         // Online: observe opponent state from Firebase
         if (mode == GameMode.ONLINE) {
+            val isGuest = sessionManager.localRole() == OnlineRole.GUEST
+            val alreadyJoinedOpponent = sessionManager.joinedOpponentName.value
+                .takeIf { it.isNotEmpty() }
+                ?: sessionManager.lastKnownOpponentName.value
+            // Opponent name from current session or last completed session
+            // lastKnownOpponentName survives session resets — always has the real name
+            val knownOpponentName = sessionManager.lastKnownOpponentName.value
+                .takeIf { it.isNotEmpty() }
+                ?: sessionManager.currentSession()?.opponentName ?: ""
+
             if (isRematch) {
-                // Room already set up — guest skips waiting, host shows simple rejoin message
-                val isHost = sessionManager.localRole() == OnlineRole.HOST
+                val isHost = !isGuest
                 _uiState.update { it.copy(
-                    waitingForOpponent = isHost,   // host still waits briefly for guest to rejoin
-                    gameState          = GamePhase.PAUSED,
+                    waitingForOpponent = isHost,
+                    opponentName       = knownOpponentName,   // always populate
+                    gameState          = if (isGuest) GamePhase.PLAYING else GamePhase.PAUSED,
                     isRematch          = true,
                 ) }
+                if (isGuest) startTimer()
+            } else if (isGuest) {
+                // Guest already joined — start immediately
+                _uiState.update { it.copy(
+                    waitingForOpponent = false,
+                    gameState          = GamePhase.PLAYING,
+                    isRematch          = false,
+                ) }
+                startTimer()
+            } else if (alreadyJoinedOpponent.isNotEmpty()) {
+                // Host navigated after guest already joined — start immediately
+                _uiState.update { it.copy(
+                    waitingForOpponent = false,
+                    opponentName       = alreadyJoinedOpponent,
+                    gameState          = GamePhase.PLAYING,
+                    isRematch          = false,
+                ) }
+                startTimer()
             } else {
+                // Host: still waiting for guest
                 _uiState.update { it.copy(
                     waitingForOpponent = true,
                     gameState          = GamePhase.PAUSED,
@@ -454,8 +483,12 @@ class GameViewModel @Inject constructor(
                             startTimer()
                         }
                     }
-                    is RoomEvent.OpponentDisconnected ->
-                        _uiState.update { it.copy(opponentName = "${it.opponentName} (disconnected)") }
+                    is RoomEvent.OpponentDisconnected -> {
+                        // Only show disconnect tag during active gameplay, not during end/rematch phase
+                        if (_uiState.value.gameState == GamePhase.PLAYING) {
+                            _uiState.update { it.copy(opponentName = "${it.opponentName} (disconnected)") }
+                        }
+                    }
                     is RoomEvent.OpponentReconnected  ->
                         _uiState.update { it.copy(
                             opponentName = sessionManager.currentSession()?.opponentName ?: it.opponentName
@@ -546,13 +579,16 @@ class GameViewModel @Inject constructor(
         if (_uiState.value.isOnlineMode) {
             val current = session
             viewModelScope.launch {
+                // Mark session ABANDONED so it never appears on Home screen Resume button
                 if (current != null) {
+                    gameRepository.save(current.copy(status = SessionStatus.ABANDONED))
                     sessionManager.markLocalFinished(
                         finalScore = current.score,
                         moveCount  = current.moveCount,
                     )
                 }
-                sessionManager.endSession()
+                // deleteRoom=false = mid-game quit, reset room immediately with no delay
+                sessionManager.endSession(deleteRoom = false)
             }
         }
     }

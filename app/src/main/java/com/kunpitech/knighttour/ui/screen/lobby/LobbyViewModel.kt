@@ -38,15 +38,53 @@ class LobbyViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             prefsRepository.preferences.collect { prefs ->
-                _uiState.update { it.copy(playerName = prefs.playerName) }
+                val name = prefs.playerName
+                _uiState.update { it.copy(playerName = name) }
+
+                if (name.isNotEmpty()) {
+                    observeWaitingRooms(name)
+                    if (!reconnectDone) {
+                        reconnectDone = true
+                        reconnectExistingRoom(name)
+                    }
+                }
             }
         }
         sessionManager.roomEvents
             .onEach { handleRoomEvent(it) }
             .launchIn(viewModelScope)
+    }
 
-        // Always observe waiting rooms for the browse tab
-        observeWaitingRooms()
+    /** If this player already has a room, reset it to WAITING then attach observer so host navigates when guest joins. */
+    private fun reconnectExistingRoom(playerName: String) {
+        viewModelScope.launch {
+            try {
+                val roomCode = firebaseRepo.findRoomCodeByHost(playerName) ?: return@launch
+                val room     = firebaseRepo.getRoomOnce(roomCode) ?: return@launch
+
+                // Don't interrupt an active game
+                val guestActive = room.status == "PLAYING" && room.guest.isConnected
+                if (guestActive) return@launch
+
+                // Reset room to WAITING in Firebase first
+                firebaseRepo.resetRoomForRematch(
+                    roomCode  = roomCode,
+                    hostId    = room.hostId,
+                    hostName  = playerName,
+                    guestName = "",
+                    boardSize = room.boardSize,
+                )
+
+                // Attach session + observer WITHOUT resetting Firebase again
+                // so host auto-navigates when a guest joins from browse
+                sessionManager.attachToExistingRoom(
+                    localName = playerName,
+                    roomCode  = roomCode,
+                    boardSize = room.boardSize,
+                    scope     = viewModelScope,
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     fun onEvent(event: LobbyEvent) {
@@ -63,10 +101,13 @@ class LobbyViewModel @Inject constructor(
             is LobbyEvent.BoardSizeSelected -> _uiState.update {
                 it.copy(selectedSize = event.size)
             }
+            is LobbyEvent.RoomNameChanged -> _uiState.update {
+                it.copy(roomNameInput = event.name.take(20), error = null, hasExistingRoom = false)
+            }
             LobbyEvent.CreateRoom      -> createRoom()
             LobbyEvent.CancelWaiting   -> cancelWaiting()
             is LobbyEvent.JoinCodeChanged -> _uiState.update {
-                it.copy(joinCodeInput = event.code.filter { c -> c.isDigit() }.take(6))
+                it.copy(joinCodeInput = event.code.filter { c -> c.isLetterOrDigit() }.take(12).uppercase())
             }
             LobbyEvent.JoinRoom              -> joinRoom(_uiState.value.joinCodeInput.trim())
             is LobbyEvent.JoinFromBrowser    -> joinRoom(event.roomCode)
@@ -78,12 +119,16 @@ class LobbyViewModel @Inject constructor(
 
     // ── Room observation ─────────────────────────────────────────
 
-    private fun observeWaitingRooms() {
-        val myName = _uiState.value.playerName
+    private var browseStarted   = false
+    private var reconnectDone   = false
+
+    private fun observeWaitingRooms(myName: String) {
+        if (browseStarted) return
+        browseStarted = true
         firebaseRepo.observeWaitingRooms(myName)
             .onEach { rooms ->
                 _uiState.update { it.copy(
-                    waitingRooms   = rooms,   // own room included, pinned to top
+                    waitingRooms   = rooms,
                     isLoadingRooms = false,
                 ) }
             }
@@ -93,24 +138,39 @@ class LobbyViewModel @Inject constructor(
     // ── Create ───────────────────────────────────────────────────
 
     private fun createRoom() {
-        val name = _uiState.value.playerName
-        val code = sessionManager.generateRoomCode()
-        val boardSize = _uiState.value.selectedSize.size
-        _uiState.update { it.copy(isCreating = true, error = null) }
+        val state     = _uiState.value
+        val playerName = state.playerName
+        val roomName   = state.roomNameInput.trim()
+        val boardSize  = state.selectedSize.size
+
+        if (roomName.isEmpty()) {
+            _uiState.update { it.copy(error = "Enter a room name") }
+            return
+        }
+
+        _uiState.update { it.copy(isCreating = true, error = null, hasExistingRoom = false) }
         viewModelScope.launch {
             try {
+                // Check if player already has an open room
+                if (firebaseRepo.playerHasOpenRoom(playerName)) {
+                    _uiState.update {
+                        it.copy(isCreating = false, hasExistingRoom = true)
+                    }
+                    return@launch
+                }
+
                 sessionManager.createRoom(
-                    roomCode  = code,
-                    localName = name,
+                    localName = playerName,
+                    roomName  = roomName,
                     boardSize = boardSize,
                     scope     = viewModelScope,
                 )
+                val roomCode = sessionManager.currentSession()?.roomCode ?: ""
                 _uiState.update { it.copy(isCreating = false, isWaiting = false) }
-                _navigateToGame.value = code
+                _navigateToGame.value = roomCode
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(isCreating = false,
-                        error = "Failed to create room. Check your connection.")
+                    it.copy(isCreating = false, error = "Failed to create room. Check your connection.")
                 }
             }
         }
@@ -126,8 +186,9 @@ class LobbyViewModel @Inject constructor(
     // ── Join ─────────────────────────────────────────────────────
 
     private fun joinRoom(code: String) {
-        if (code.length != 6) {
-            _uiState.update { it.copy(error = "Enter a valid 6-digit code") }
+        val cleaned = code.trim().uppercase()
+        if (cleaned.isEmpty()) {
+            _uiState.update { it.copy(error = "Enter a room code") }
             return
         }
         val name = _uiState.value.playerName
@@ -135,13 +196,13 @@ class LobbyViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val joined = sessionManager.joinRoom(
-                    roomCode  = code,
+                    roomCode  = cleaned,
                     localName = name,
                     scope     = viewModelScope,
                 )
                 if (joined) {
                     _uiState.update { it.copy(isJoining = false) }
-                    _navigateToGame.value = code
+                    _navigateToGame.value = cleaned
                 } else {
                     _uiState.update {
                         it.copy(isJoining = false,
@@ -163,6 +224,11 @@ class LobbyViewModel @Inject constructor(
         when (event) {
             is RoomEvent.OpponentJoined ->
                 _uiState.update { it.copy(opponentName = event.name) }
+            is RoomEvent.GameStarted -> {
+                // Guest joined and game is ready — navigate host to game screen
+                val roomCode = sessionManager.currentSession()?.roomCode ?: return
+                _navigateToGame.value = roomCode
+            }
             is RoomEvent.Error ->
                 _uiState.update {
                     it.copy(isCreating = false, isWaiting = false,

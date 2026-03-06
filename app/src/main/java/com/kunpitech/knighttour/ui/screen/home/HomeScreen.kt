@@ -309,7 +309,7 @@ private fun HomeTopBar(
                     .background(SurfaceElevated, CircleShape),
                 contentAlignment    = Alignment.Center,
             ) {
-                Text("♞", fontSize = 20.sp)
+                Text("♞", fontSize = 20.sp, color = KnightGold)
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -438,7 +438,7 @@ private fun HeroSection(
         Spacer(Modifier.height(10.dp))
 
         Text(
-            text      = "THE DEVIL'S GAME",
+            text      = "THE KNIGHT’S CHALLENGE",
             style     = MaterialTheme.knightType.Eyebrow.copy(letterSpacing = 5.sp),
             color     = DevilRed.copy(alpha = 0.7f),
             textAlign = TextAlign.Center,
@@ -639,7 +639,7 @@ private fun ModeCardsSection(
             ModeCardSecondary(
                 modifier    = Modifier.weight(1f),
                 icon        = "😈",
-                title       = "DEVIL",
+                title       = "DEMON",
                 subtitle    = "10×10 · 90s",
                 description = "No hints. No mercy.",
                 accentColor = DevilRed,
@@ -940,11 +940,11 @@ private fun IconButton24(
         modifier         = Modifier
             .size(36.dp)
             .background(SurfaceElevated, KnightTourShapes.extraSmall)
-            .border(BorderWidth.thin, BorderSubtle, KnightTourShapes.extraSmall)
+            .border(BorderWidth.thin, KnightGold.copy(alpha = 0.35f), KnightTourShapes.extraSmall)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(icon, fontSize = 16.sp)
+        Text(icon, fontSize = 16.sp, color = KnightGold)
     }
 }
 

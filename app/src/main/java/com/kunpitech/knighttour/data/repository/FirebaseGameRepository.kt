@@ -93,9 +93,11 @@ class FirebaseGameRepository @Inject constructor() {
         hostId    : String,
         hostName  : String,
         boardSize : Int = 6,
+        roomName  : String = roomCode,   // display name shown in browse
     ) {
         val room = mapOf(
             "status"    to "WAITING",
+            "roomName"  to roomName,
             "hostId"    to hostId,
             "guestId"   to "",
             "boardSize" to boardSize,
@@ -163,8 +165,12 @@ class FirebaseGameRepository @Inject constructor() {
         )
         roomRef(roomCode).setValue(resetRoom).await()
 
-        // Explicitly write isConnected=true for host after reset
-        // This overwrites any stale onDisconnect value that may have fired
+        // Cancel ANY stale onDisconnect handlers BEFORE writing isConnected=true
+        // Without this, old handlers fire asynchronously and overwrite isConnected back to false
+        playerRef(roomCode, "host").child("isConnected").onDisconnect().cancel().await()
+        playerRef(roomCode, "guest").child("isConnected").onDisconnect().cancel().await()
+
+        // Now safe to write isConnected=true — no stale handler will overwrite it
         playerRef(roomCode, "host").child("isConnected").setValue(true).await()
 
         // Reset matchResults — same node, fresh scores
@@ -276,7 +282,13 @@ class FirebaseGameRepository @Inject constructor() {
 
     /** Set connected flag — call on resume/pause. */
     suspend fun setConnected(roomCode: String, role: String, connected: Boolean) {
-        playerRef(roomCode, role).child("isConnected").setValue(connected).await()
+        val ref = playerRef(roomCode, role).child("isConnected")
+        if (!connected) {
+            // Cancel the onDisconnect handler before manually setting false
+            // so it doesn't fire again later on the next session's reset
+            ref.onDisconnect().cancel().await()
+        }
+        ref.setValue(connected).await()
     }
 
     /** Register an onDisconnect handler so Firebase auto-clears presence. */
@@ -367,6 +379,11 @@ class FirebaseGameRepository @Inject constructor() {
         db.getReference("rematch/$roomCode/$role").setValue("READY").await()
     }
 
+    /** Clear only this player's own signal — does NOT touch opponent's signal. */
+    suspend fun clearMyRematchSignal(roomCode: String, role: String) {
+        try { db.getReference("rematch/$roomCode/$role").removeValue().await() } catch (_: Exception) {}
+    }
+
     /** Host calls this after resetting the room — signals guest it's safe to join. */
     suspend fun signalRoomReady(roomCode: String) {
         db.getReference("rematch/$roomCode/roomReady").setValue(true).await()
@@ -412,6 +429,105 @@ class FirebaseGameRepository @Inject constructor() {
     }
 
     /** Check if a room code exists and is joinable. */
+    /**
+     * Derive a stable room code from the player's name.
+     * Same player always gets the same room — no new rooms created ever.
+     */
+    /**
+     * Called when host opens lobby — if their persistent room exists in any state,
+     * reset it to WAITING and mark host as connected again.
+     * Returns the roomCode if reconnected, null if no room existed.
+     */
+    suspend fun reconnectHostRoom(hostName: String, hostId: String, boardSize: Int = 6): String? {
+        return try {
+            val roomCode = roomCodeForPlayer(hostName)
+            val snap     = roomRef(roomCode).get().await()
+            if (!snap.exists()) return null
+
+            // Room exists — reset to WAITING and mark host connected
+            resetRoomForRematch(
+                roomCode  = roomCode,
+                hostId    = hostId,
+                hostName  = hostName,
+                guestName = "",
+                boardSize = boardSize,
+            )
+            // Re-register disconnect handler so future disconnects are tracked
+            registerDisconnectHandler(roomCode, "host")
+            roomCode
+        } catch (_: Exception) { null }
+    }
+
+    /** Derive a room code from a custom room name (e.g. "1v1 Ranked" → "1V1RANKED"). */
+    fun roomCodeForName(roomName: String): String =
+        sanitizeName(roomName.trim()).take(12).uppercase()
+
+    /** Derive the room code tied to a player — used for reconnect/check. */
+    fun roomCodeForPlayer(playerName: String): String =
+        sanitizeName(playerName).take(12).uppercase()
+
+    /** Find the room code for a given host player name (if any WAITING room exists). */
+    suspend fun findRoomCodeByHost(hostName: String): String? {
+        return try {
+            val snap = db.getReference("rooms")
+                .orderByChild("host/name")
+                .equalTo(hostName)
+                .get().await()
+            snap.children.firstOrNull { room ->
+                room.child("status").getValue(String::class.java) != "PLAYING" ||
+                        room.child("host/isConnected").getValue(Boolean::class.java) == true
+            }?.key
+        } catch (_: Exception) { null }
+    }
+
+    /** Check if a player already has an open (WAITING) room in Firebase. */
+    suspend fun playerHasOpenRoom(playerName: String): Boolean {
+        return try {
+            val snap = db.getReference("rooms")
+                .orderByChild("host/name")
+                .equalTo(playerName)
+                .get().await()
+            snap.children.any { room ->
+                room.child("status").getValue(String::class.java) == "WAITING" &&
+                        room.child("host/isConnected").getValue(Boolean::class.java) == true
+            }
+        } catch (_: Exception) { false }
+    }
+
+    /**
+     * Get or reset a player's persistent room.
+     * - If room doesn't exist → create it fresh
+     * - If room exists (any status) → reset it to WAITING, clearing old game data
+     * This means a player always reuses the same room code forever.
+     */
+    suspend fun getOrResetPlayerRoom(
+        hostName  : String,
+        hostId    : String,
+        roomName  : String,
+        boardSize : Int = 6,
+    ): String {
+        val roomCode = roomCodeForName(roomName)
+        val existing = roomRef(roomCode).get().await()
+
+        if (existing.exists()) {
+            resetRoomForRematch(
+                roomCode  = roomCode,
+                hostId    = hostId,
+                hostName  = hostName,
+                guestName = "",
+                boardSize = boardSize,
+            )
+        } else {
+            createRoom(
+                roomCode  = roomCode,
+                hostId    = hostId,
+                hostName  = hostName,
+                boardSize = boardSize,
+            )
+        }
+        return roomCode
+    }
+
     suspend fun isRoomJoinable(roomCode: String): Boolean {
         val snap = roomRef(roomCode).get().await()
         if (!snap.exists()) return false
@@ -442,6 +558,8 @@ class FirebaseGameRepository @Inject constructor() {
                     val createdAt      = roomSnap.child("createdAt").getValue(Long::class.java) ?: 0L
                     val isConnected    = roomSnap.child("host/isConnected").getValue(Boolean::class.java) ?: false
                     val isExpired      = (now - createdAt) > ttlMs
+                    val roomName       = roomSnap.child("roomName").getValue(String::class.java)
+                        ?.takeIf { it.isNotEmpty() } ?: roomCode
 
                     // Auto-delete: disconnected AND expired = abandoned room, clean it up
                     if (!isConnected && isExpired) {
@@ -452,6 +570,7 @@ class FirebaseGameRepository @Inject constructor() {
                     RoomBrowserEntry(
                         roomCode        = roomCode,
                         hostName        = hostName,
+                        roomName        = roomName,
                         boardSize       = boardSize,
                         createdAt       = createdAt,
                         isHostConnected = isConnected,
@@ -715,10 +834,11 @@ data class MatchResult(
 data class RoomBrowserEntry(
     val roomCode       : String,
     val hostName       : String,
+    val roomName       : String  = roomCode,  // user-chosen display name
     val boardSize      : Int,
     val createdAt      : Long,
-    val isHostConnected: Boolean = true,   // false = host disconnected/abandoned
-    val isOwn          : Boolean = false,  // true = this is my own room
+    val isHostConnected: Boolean = true,
+    val isOwn          : Boolean = false,
 )
 
 data class FirebaseScoreEntry(

@@ -132,6 +132,9 @@ class ResultViewModel @Inject constructor(
             // ── Watch for opponent disconnecting (they hit Exit Game) ─
             if (isOnline && roomCode.isNotEmpty()) {
                 observeOpponentPresence(roomCode, localRole)
+                // Clear our own stale signal from any previous rematch
+                // so we start clean — does NOT clear opponent's signal
+                try { firebaseRepo.clearMyRematchSignal(roomCode, localRole) } catch (_: Exception) {}
             }
         }
     }
@@ -143,10 +146,14 @@ class ResultViewModel @Inject constructor(
     private fun observeOpponentPresence(roomCode: String, localRole: String) {
         val opponentRole = if (localRole == "host") "guest" else "host"
         viewModelScope.launch {
+            // Small delay — give Firebase time to settle after game end
+            // (endSession sets isConnected=false, we don't want to react to that)
+            kotlinx.coroutines.delay(3000)
             firebaseRepo.observeOpponent(roomCode, opponentRole)
                 .collect { state ->
-                    if (!state.isConnected) {
-                        // Opponent left — cancel any pending rematch wait
+                    // Only reset rematch waiting if we're actually waiting for them
+                    val currentRematch = _uiState.value.rematchState
+                    if (!state.isConnected && currentRematch == RematchState.WAITING) {
                         _uiState.update { it.copy(rematchState = RematchState.IDLE) }
                     }
                 }
@@ -308,7 +315,8 @@ class ResultViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Step 1: Signal we're ready
+                // Step 1: Signal we're ready (overwrites any stale value for our role only)
+                // Do NOT clear the whole node — that would wipe the opponent's signal too
                 firebaseRepo.signalRematch(roomCode, state.localRole)
 
                 if (isHost) {
@@ -328,10 +336,10 @@ class ResultViewModel @Inject constructor(
                             // Signal guest that room is ready to join
                             firebaseRepo.signalRoomReady(roomCode)
 
-                            // Host sets up session
-                            sessionManager.createRoom(
-                                roomCode  = roomCode,
+                            // Room already reset above — just attach session + observer
+                            sessionManager.attachToExistingRoom(
                                 localName = state.localName,
+                                roomCode  = roomCode,
                                 boardSize = state.boardSize,
                                 scope     = viewModelScope,
                             )
@@ -382,15 +390,22 @@ class ResultViewModel @Inject constructor(
                 val role     = state.localRole
                 val isHost   = role == "host"
 
-                // Cancel pending rematch signal so opponent's "WAITING" button resets
-                firebaseRepo.clearRematch(roomCode)
+                // Cancel only our own pending signal — don't wipe opponent's
+                firebaseRepo.clearMyRematchSignal(roomCode, role)
 
-                // Mark this player as disconnected in the room
-                firebaseRepo.setConnected(roomCode, role, false)
-
-                // Host cleans up the room entirely so it vanishes from the browser
                 if (isHost) {
-                    firebaseRepo.deleteRoom(roomCode)
+                    // Host: reset room back to WAITING so it stays available for next challenger
+                    // Room is persistent — never deleted, just recycled
+                    firebaseRepo.resetRoomForRematch(
+                        roomCode  = roomCode,
+                        hostId    = "",           // new hostId assigned next time createRoom called
+                        hostName  = state.localName,
+                        guestName = "",
+                        boardSize = state.boardSize,
+                    )
+                } else {
+                    // Guest: just mark disconnected — host's room remains intact
+                    firebaseRepo.setConnected(roomCode, role, false)
                 }
             } catch (_: Exception) {}
             onDone()

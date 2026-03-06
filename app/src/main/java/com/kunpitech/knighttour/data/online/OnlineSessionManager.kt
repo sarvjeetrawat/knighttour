@@ -5,6 +5,9 @@ import com.kunpitech.knighttour.data.repository.PlayerStateDto
 import com.kunpitech.knighttour.data.repository.toPosition
 import com.kunpitech.knighttour.domain.model.Position
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,20 +53,35 @@ sealed interface RoomEvent {
 class OnlineSessionManager @Inject constructor(
     private val firebaseRepo: FirebaseGameRepository,
 ) {
+    // Singleton scope — survives ViewModel navigation, lives as long as the app
+    private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var roomStatusJob: Job? = null   // cancelled/restarted each new game
+
     private var session: OnlineSession? = null
     private var lastSession: OnlineSession? = null
 
-    private var _roomEvents = MutableSharedFlow<RoomEvent>(replay = 3)
-    var roomEvents: SharedFlow<RoomEvent> = _roomEvents.asSharedFlow()
-        private set
+    // replay=0: no stale events replayed to new subscribers (GameViewModel, LobbyViewModel)
+    // extraBufferCapacity=8: events aren't dropped if collector is slow
+    private val _roomEvents = MutableSharedFlow<RoomEvent>(replay = 0, extraBufferCapacity = 8)
+    val roomEvents: SharedFlow<RoomEvent> = _roomEvents.asSharedFlow()
 
     private fun resetRoomEvents() {
-        _roomEvents = MutableSharedFlow(replay = 3)
-        roomEvents  = _roomEvents.asSharedFlow()
+        // Flow is stable — just clear session state
+        lastSession = null
+        _joinedOpponentName.value = ""
+        // NOTE: do NOT clear lastKnownOpponentName here — it must survive resets for rematch overlay
     }
 
     private val _opponentState = MutableStateFlow<PlayerStateDto?>(null)
     val opponentState: StateFlow<PlayerStateDto?> = _opponentState.asStateFlow()
+
+    // Set to opponent name when guest joins — persists across navigation so GameViewModel reads it on init
+    private val _joinedOpponentName = MutableStateFlow<String>("")
+    val joinedOpponentName: StateFlow<String> = _joinedOpponentName.asStateFlow()
+
+    // Survives session resets — used for rematch overlay so name never shows as blank/disconnected
+    private val _lastKnownOpponentName = MutableStateFlow<String>("")
+    val lastKnownOpponentName: StateFlow<String> = _lastKnownOpponentName.asStateFlow()
 
     fun generateRoomCode(): String = Random.nextInt(100_000, 999_999).toString()
 
@@ -88,50 +106,82 @@ class OnlineSessionManager @Inject constructor(
     }
 
     suspend fun createRoom(
-        roomCode  : String,
         localName : String,
+        roomName  : String,   // user-chosen room name
         boardSize : Int,
         scope     : CoroutineScope,
     ) {
         val localId = UUID.randomUUID().toString()
-        lastSession = null  // clear previous game data
+        lastSession = null
         resetRoomEvents()
+
+        try {
+            val persistentCode = firebaseRepo.getOrResetPlayerRoom(
+                hostName  = localName,
+                hostId    = localId,
+                roomName  = roomName,
+                boardSize = boardSize,
+            )
+            attachSessionObserver(persistentCode, localId, localName, boardSize, scope)
+        } catch (e: Exception) {
+            _roomEvents.tryEmit(RoomEvent.Error(e.message ?: "Failed to create room"))
+        }
+    }
+
+    /**
+     * Attach session + observer to an already-reset room without resetting Firebase again.
+     * Used by reconnectExistingRoom in LobbyViewModel — room is already in WAITING state.
+     */
+    suspend fun attachToExistingRoom(
+        localName : String,
+        roomCode  : String,   // passed in directly from reconnectExistingRoom which already found it
+        boardSize : Int,
+        scope     : CoroutineScope,
+    ) {
+        val localId = UUID.randomUUID().toString()
+        lastSession = null
+        resetRoomEvents()
+
+        attachSessionObserver(roomCode, localId, localName, boardSize, scope)
+    }
+
+    private fun attachSessionObserver(
+        persistentCode : String,
+        localId        : String,
+        localName      : String,
+        boardSize      : Int,
+        scope          : CoroutineScope,
+    ) {
         session = OnlineSession(
-            roomCode  = roomCode,
+            roomCode  = persistentCode,
             localRole = OnlineRole.HOST,
             localId   = localId,
             localName = localName,
             boardSize = boardSize,
         )
-        try {
-            firebaseRepo.createRoom(
-                roomCode  = roomCode,
-                hostId    = localId,
-                hostName  = localName,
-                boardSize = boardSize,
-            )
-            firebaseRepo.registerDisconnectHandler(roomCode, "host")
-            _roomEvents.tryEmit(RoomEvent.WaitingForOpponent)
 
-            firebaseRepo.observeRoomStatus(roomCode)
-                .onEach { status ->
-                    when (status) {
-                        "PLAYING" -> {
-                            val room = firebaseRepo.getRoomOnce(roomCode)
-                            val guestName = room?.guest?.name ?: "Opponent"
-                            session = session?.copy(opponentName = guestName)
-                            _roomEvents.tryEmit(RoomEvent.OpponentJoined(guestName))
-                            _roomEvents.tryEmit(RoomEvent.GameStarted)
-                            observeOpponent(roomCode, scope)
-                        }
-                        "FINISHED" -> _roomEvents.tryEmit(RoomEvent.GameFinished)
+        firebaseRepo.registerDisconnectHandler(persistentCode, "host")
+        _roomEvents.tryEmit(RoomEvent.WaitingForOpponent)
+
+        // Cancel any previous room status observer before starting a new one
+        roomStatusJob?.cancel()
+        roomStatusJob = firebaseRepo.observeRoomStatus(persistentCode)
+            .onEach { status ->
+                when (status) {
+                    "PLAYING" -> {
+                        val room = firebaseRepo.getRoomOnce(persistentCode)
+                        val guestName = room?.guest?.name ?: "Opponent"
+                        session = session?.copy(opponentName = guestName)
+                        _joinedOpponentName.value = guestName
+                        _lastKnownOpponentName.value = guestName
+                        _roomEvents.tryEmit(RoomEvent.OpponentJoined(guestName))
+                        _roomEvents.tryEmit(RoomEvent.GameStarted)
+                        observeOpponent(persistentCode, scope)
                     }
+                    "FINISHED" -> _roomEvents.tryEmit(RoomEvent.GameFinished)
                 }
-                .launchIn(scope)
-
-        } catch (e: Exception) {
-            _roomEvents.tryEmit(RoomEvent.Error(e.message ?: "Failed to create room"))
-        }
+            }
+            .launchIn(managerScope)
     }
 
     suspend fun joinRoom(
@@ -160,6 +210,7 @@ class OnlineSessionManager @Inject constructor(
                 opponentName = room.host.name,
                 boardSize    = room.boardSize,
             )
+            _lastKnownOpponentName.value = room.host.name   // survives resets
 
             firebaseRepo.registerDisconnectHandler(roomCode, "guest")
             _roomEvents.tryEmit(RoomEvent.GameStarted)
@@ -219,10 +270,21 @@ class OnlineSessionManager @Inject constructor(
         lastSession = s
         try {
             firebaseRepo.setConnected(s.roomCode, localRoleStr(), false)
-            firebaseRepo.setRoomFinished(s.roomCode)
             if (s.localRole == OnlineRole.HOST) {
-                kotlinx.coroutines.delay(8000)
-                firebaseRepo.deleteRoom(s.roomCode)
+                firebaseRepo.setRoomFinished(s.roomCode)
+                // Short delay so guest can read final scores before room resets
+                // Only delay if game ended normally (deleteRoom = true means normal end)
+                if (deleteRoom) kotlinx.coroutines.delay(2000)
+                // Reset room immediately so it reappears in browse
+                firebaseRepo.resetRoomForRematch(
+                    roomCode  = s.roomCode,
+                    hostId    = s.localId,
+                    hostName  = s.localName,
+                    guestName = "",
+                    boardSize = s.boardSize,
+                )
+            } else {
+                firebaseRepo.setRoomFinished(s.roomCode)
             }
         } catch (_: Exception) {}
         session = null

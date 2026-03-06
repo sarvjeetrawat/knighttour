@@ -287,9 +287,10 @@ fun GameScreen(
             exit    = fadeOut() + scaleOut(targetScale = 0.88f),
         ) {
             PauseOverlay(
-                onResume  = { onEvent(GameEvent.Resume) },
-                onRestart = { onEvent(GameEvent.Restart) },
-                onQuit    = onNavigateBack,
+                onResume     = { onEvent(GameEvent.Resume) },
+                onRestart    = { onEvent(GameEvent.Restart) },
+                onQuit       = onNavigateBack,
+                isOnlineMode = uiState.isOnlineMode,
             )
         }
 
@@ -1247,19 +1248,26 @@ private fun WaitingForOpponentOverlay(roomCode: String) {
                 fontSize = 36.sp,
             )
             Text(
-                text  = "SHARE THIS CODE",
+                text  = "YOUR ROOM CODE",
                 style = MaterialTheme.knightType.StatLabel.copy(letterSpacing = 3.sp),
                 color = TextTertiary,
             )
             Text(
-                text      = roomCode.chunked(3).joinToString("  "),
+                text      = roomCode,
                 style     = MaterialTheme.knightType.GameTitle.copy(
-                    fontSize      = 40.sp,
-                    letterSpacing = 6.sp,
+                    fontSize      = 32.sp,
+                    letterSpacing = 3.sp,
                     fontFamily    = FontFamily.Monospace,
                 ),
                 color     = OnlineTeal,
                 textAlign = TextAlign.Center,
+            )
+            Text(
+                text  = "Others can find you in Browse, or type this code in Join",
+                style = MaterialTheme.knightType.BodySecondary,
+                color = TextTertiary,
+                textAlign = TextAlign.Center,
+                modifier  = Modifier.padding(horizontal = 16.dp),
             )
             Row(
                 verticalAlignment     = Alignment.CenterVertically,
@@ -1283,9 +1291,10 @@ private fun WaitingForOpponentOverlay(roomCode: String) {
 
 @Composable
 private fun PauseOverlay(
-    onResume  : () -> Unit,
-    onRestart : () -> Unit,
-    onQuit    : () -> Unit,
+    onResume    : () -> Unit,
+    onRestart   : () -> Unit,
+    onQuit      : () -> Unit,
+    isOnlineMode: Boolean = false,
 ) {
     Box(
         modifier         = Modifier
@@ -1312,9 +1321,11 @@ private fun PauseOverlay(
                 color = CrownGold,
             )
             Spacer(Modifier.height(2.dp))
-            OverlayButton("RESUME",  KnightGold,              onResume)
-            OverlayButton("RESTART", TextSecondary,            onRestart)
-            OverlayButton("QUIT",    DevilRed.copy(alpha=0.8f), onQuit)
+            OverlayButton("RESUME", KnightGold, onResume)
+            if (!isOnlineMode) {
+                OverlayButton("RESTART", TextSecondary, onRestart)
+            }
+            OverlayButton("QUIT", DevilRed.copy(alpha = 0.8f), onQuit)
         }
     }
 }

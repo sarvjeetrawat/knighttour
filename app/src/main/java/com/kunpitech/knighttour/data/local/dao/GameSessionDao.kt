@@ -41,10 +41,12 @@ interface GameSessionDao {
     /**
      * Returns the most recently started unfinished session.
      * Used by the Home screen "RESUME" button.
+     * ONLINE sessions are excluded — they cannot be resumed (no live Firebase connection).
      */
     @Query("""
         SELECT * FROM game_sessions
         WHERE status = 'IN_PROGRESS'
+        AND mode != 'ONLINE'
         ORDER BY startedAt DESC
         LIMIT 1
     """)
@@ -53,6 +55,7 @@ interface GameSessionDao {
     @Query("""
         SELECT COUNT(*) FROM game_sessions
         WHERE status = 'IN_PROGRESS'
+        AND mode != 'ONLINE'
     """)
     fun hasInProgressSession(): Flow<Int>
 

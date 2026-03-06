@@ -123,9 +123,17 @@ fun KnightTourNavHost(
                 },
             ),
         ) {
+            val gameMode = it.arguments?.getString("gameMode") ?: "OFFLINE"
+            val isOnline = gameMode == "ONLINE"
             GameRoute(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    if (isOnline) {
+                        navController.navigate(Screen.Lobby.route) {
+                            popUpTo(Screen.Home.route)
+                        }
+                    } else {
+                        navController.popBackStack()
+                    }
                 },
                 onNavigateResult = { sessionId ->
                     navController.navigate(Screen.Result.createRoute(sessionId)) {

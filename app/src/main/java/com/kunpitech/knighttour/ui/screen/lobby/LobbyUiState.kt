@@ -15,9 +15,11 @@ data class LobbyUiState(
     val selectedSize    : OnlineBoardSize     = OnlineBoardSize.SIX,
 
     // CREATE tab
+    val roomNameInput   : String              = "",
     val generatedCode   : String              = "",
     val isCreating      : Boolean             = false,
     val isWaiting       : Boolean             = false,
+    val hasExistingRoom : Boolean             = false,   // true = player already has an open room
 
     // JOIN tab
     val joinCodeInput   : String              = "",
@@ -41,6 +43,7 @@ enum class OnlineBoardSize(val label: String, val size: Int, val timeLimit: Int)
 enum class LobbyTab { CREATE, JOIN, BROWSE }
 
 sealed interface LobbyEvent {
+    data class  RoomNameChanged(val name: String)            : LobbyEvent
     data object CreateRoom                                    : LobbyEvent
     data object CancelWaiting                                 : LobbyEvent
     data class  JoinCodeChanged(val code: String)            : LobbyEvent
