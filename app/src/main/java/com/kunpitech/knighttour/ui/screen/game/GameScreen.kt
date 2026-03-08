@@ -1,5 +1,6 @@
 package com.kunpitech.knighttour.ui.screen.game
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.EaseInOutSine
 import androidx.compose.animation.core.EaseOutCubic
@@ -18,6 +19,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.background
@@ -30,14 +32,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -64,10 +71,16 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -96,6 +109,7 @@ import com.kunpitech.knighttour.ui.theme.RoundedSmall
 import com.kunpitech.knighttour.ui.theme.Scrim
 import com.kunpitech.knighttour.ui.theme.SurfaceDark
 import com.kunpitech.knighttour.ui.theme.SurfaceElevated
+import com.kunpitech.knighttour.ui.theme.TextPrimary
 import com.kunpitech.knighttour.ui.theme.TextSecondary
 import com.kunpitech.knighttour.ui.theme.TextTertiary
 import com.kunpitech.knighttour.ui.theme.WarningAmber
@@ -130,6 +144,7 @@ fun GameScreen(
     onNavigateResult : () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
+    var showInfoSheet by remember { mutableStateOf(false) }
 
     // ── SHARED INFINITE ANIMATIONS ───────────────────────────────
     val infiniteTransition = rememberInfiniteTransition(label = "game_global")
@@ -239,8 +254,9 @@ fun GameScreen(
 
             // ── BOTTOM ACTIONS ────────────────────────────────────
             BottomBar(
-                uiState  = uiState,
-                onEvent  = onEvent,
+                uiState     = uiState,
+                onEvent     = onEvent,
+                onShowInfo  = { showInfoSheet = true },
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(
@@ -253,6 +269,14 @@ fun GameScreen(
         }
 
         // ── OVERLAYS ─────────────────────────────────────────────
+
+        // Info sheet — Rules + Stats tabs
+        if (showInfoSheet) {
+            InfoBottomSheet(
+                uiState   = uiState,
+                onDismiss = { showInfoSheet = false },
+            )
+        }
 
         // Online host waiting overlay — shown until opponent joins
         AnimatedVisibility(
@@ -930,9 +954,10 @@ private fun OpponentBar(uiState: GameUiState, modifier: Modifier = Modifier) {
 
 @Composable
 private fun BottomBar(
-    uiState  : GameUiState,
-    onEvent  : (GameEvent) -> Unit,
-    modifier : Modifier = Modifier,
+    uiState    : GameUiState,
+    onEvent    : (GameEvent) -> Unit,
+    onShowInfo : () -> Unit,
+    modifier   : Modifier = Modifier,
 ) {
     val isPlaying = uiState.gameState == GamePhase.PLAYING
     val isPaused  = uiState.gameState == GamePhase.PAUSED
@@ -988,7 +1013,7 @@ private fun BottomBar(
             icon    = "☰",
             label   = "INFO",
             enabled = true,
-            onClick = { /* board info */ },
+            onClick = { onShowInfo() },
         )
     }
 }
@@ -1673,7 +1698,7 @@ private fun PreviewDefeated() {
 }
 
 @Preview(
-    name = "Game — Devil Mode / Panic",
+    name = "Game — Demon Mode / Panic",
     showBackground = true, backgroundColor = 0xFF050508,
     widthDp = 360, heightDp = 800,
 )
@@ -1733,4 +1758,388 @@ private fun previewState(): GameUiState {
         hintsRemaining   = 1,
         currentScore     = 2780,
     )
+}
+// ═══════════════════════════════════════════════════════════════
+//  INFO BOTTOM SHEET — Rules + Stats tabs
+// ═══════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InfoBottomSheet(
+    uiState   : GameUiState,
+    onDismiss : () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true
+    )
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val tabs = listOf("RULES", "STATS")
+
+    ModalBottomSheet(
+        onDismissRequest    = onDismiss,
+        sheetState          = sheetState,
+        containerColor      = SurfaceDark,
+        dragHandle          = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 12.dp, bottom = 4.dp)
+                    .size(width = 36.dp, height = 4.dp)
+                    .background(TextTertiary.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = 24.dp),
+        ) {
+            // ── Tab row ──────────────────────────────────────────
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                tabs.forEachIndexed { idx, label ->
+                    val selected = idx == selectedTab
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (selected) KnightGold.copy(alpha = 0.15f)
+                                else SurfaceElevated
+                            )
+                            .border(
+                                1.dp,
+                                if (selected) KnightGold.copy(alpha = 0.6f) else TextTertiary.copy(alpha = 0.2f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .clickable { selectedTab = idx },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text       = label,
+                            color      = if (selected) KnightGold else TextSecondary,
+                            fontSize   = 12.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            letterSpacing = 2.sp,
+                        )
+                    }
+                }
+            }
+
+            AnimatedContent(
+                targetState   = selectedTab,
+                transitionSpec = {
+                    fadeIn(tween(180)) togetherWith fadeOut(tween(120))
+                },
+                label = "tab_content",
+            ) { tab ->
+                when (tab) {
+                    0 -> RulesTab()
+                    1 -> StatsTab(uiState)
+                }
+            }
+        }
+    }
+}
+
+// ── RULES TAB ───────────────────────────────────────────────────
+
+@Composable
+private fun RulesTab() {
+    Column(
+        modifier            = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        RuleItem(
+            emoji = "♞",
+            title = "The Knight's Tour",
+            body  = "Move the knight to every square on the board exactly once. The knight moves in an L-shape — 2 squares in one direction, then 1 square perpendicular.",
+        )
+        RuleItem(
+            emoji = "🟡",
+            title = "Valid Moves",
+            body  = "Highlighted squares show where the knight can legally move next. Only those squares are reachable — tap one to advance.",
+        )
+        RuleItem(
+            emoji = "⏱",
+            title = "Time Limit",
+            body  = "Each difficulty has a countdown. Easy gets 5 min, Medium 4 min, Hard 3 min, Demon 90 sec. Running out of time ends the game.",
+        )
+        RuleItem(
+            emoji = "💡",
+            title = "Hints",
+            body  = "Hints highlight the best next move using the Warnsdorff heuristic — always picks the square with the fewest onward moves.",
+        )
+        RuleItem(
+            emoji = "↩",
+            title = "Undo",
+            body  = "Undo reverses your last move. Use it wisely — the timer keeps running.",
+        )
+
+        // Knight move diagram
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text      = "KNIGHT MOVEMENT",
+            color     = KnightGold,
+            fontSize  = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 2.sp,
+        )
+        KnightMovesDiagram()
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+@Composable
+private fun RuleItem(emoji: String, title: String, body: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(text = emoji, fontSize = 20.sp, modifier = Modifier.padding(top = 1.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text       = title,
+                color      = TextPrimary,
+                fontSize   = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text      = body,
+                color     = TextSecondary,
+                fontSize  = 12.sp,
+                lineHeight = 17.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun KnightMovesDiagram() {
+    // 5x5 grid showing knight at center (2,2) and its 8 valid L-moves
+    val knightPos = 2 to 2
+    val validMoves = setOf(
+        0 to 1, 0 to 3, 1 to 0, 1 to 4,
+        3 to 0, 3 to 4, 4 to 1, 4 to 3,
+    )
+    val cellSize = 38.dp
+    val gap      = 3.dp
+
+    Column(
+        modifier            = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(gap),
+    ) {
+        for (r in 0..4) {
+            Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                for (c in 0..4) {
+                    val isKnight = (r to c) == knightPos
+                    val isValid  = (r to c) in validMoves
+                    val isLight  = (r + c) % 2 == 0
+                    Box(
+                        modifier = Modifier
+                            .size(cellSize)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(
+                                when {
+                                    isKnight -> KnightGold.copy(alpha = 0.25f)
+                                    isValid  -> CellValidMove.copy(alpha = 0.30f)
+                                    isLight  -> SurfaceElevated
+                                    else     -> SurfaceDark
+                                }
+                            )
+                            .border(
+                                1.dp,
+                                when {
+                                    isKnight -> KnightGold.copy(alpha = 0.7f)
+                                    isValid  -> CellValidMove.copy(alpha = 0.5f)
+                                    else     -> TextTertiary.copy(alpha = 0.12f)
+                                },
+                                RoundedCornerShape(5.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        when {
+                            isKnight -> Text("♞", fontSize = 20.sp, color = KnightGold)
+                            isValid  -> Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(CellValidMove.copy(alpha = 0.9f), CircleShape)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── STATS TAB ───────────────────────────────────────────────────
+
+@Composable
+private fun StatsTab(uiState: GameUiState) {
+    val diff       = uiState.difficulty
+    val progress   = if (uiState.totalCells > 0) uiState.moveCount.toFloat() / uiState.totalCells else 0f
+    val hintsUsed  = diff.hints - uiState.hintsRemaining
+    val elapsed    = uiState.elapsedSeconds
+    val timeLeft   = (uiState.timeLimitSeconds - elapsed).coerceAtLeast(0)
+
+    fun Int.toTimeStr(): String {
+        val m = this / 60; val s = this % 60
+        return "%d:%02d".format(m, s)
+    }
+
+    Column(
+        modifier            = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // Difficulty badge
+        Row(
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier              = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text       = diff.label,
+                color      = KnightGold,
+                fontSize   = 20.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (uiState.isOnlineMode) OnlineTeal.copy(0.15f)
+                        else KnightGold.copy(0.1f)
+                    )
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    text  = if (uiState.isOnlineMode) "ONLINE" else "OFFLINE",
+                    color = if (uiState.isOnlineMode) OnlineTeal else KnightGold,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                )
+            }
+        }
+
+        // Progress bar
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("PROGRESS", color = TextTertiary, fontSize = 10.sp, letterSpacing = 1.5.sp)
+                Text(
+                    "${uiState.moveCount} / ${uiState.totalCells} squares",
+                    color    = TextSecondary,
+                    fontSize = 11.sp,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(SurfaceElevated)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(progress)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(KnightGold)
+                )
+            }
+        }
+
+        // Stats grid
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            StatCard("SCORE",    uiState.currentScore.toString(), "pts",  Modifier.weight(1f))
+            StatCard("TIME LEFT", timeLeft.toTimeStr(),           "",     Modifier.weight(1f))
+        }
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            StatCard("ELAPSED",  elapsed.toTimeStr(),             "",     Modifier.weight(1f))
+            StatCard("HINTS",    "$hintsUsed used",               "/ ${diff.hints}", Modifier.weight(1f))
+        }
+        if (uiState.isOnlineMode) {
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                StatCard("OPPONENT", uiState.opponentName,        "",     Modifier.weight(1f))
+                StatCard("OPP. MOVES", uiState.opponentMoves.toString(), "moves", Modifier.weight(1f))
+            }
+        }
+
+        // Scoring breakdown
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text      = "SCORING",
+            color     = KnightGold,
+            fontSize  = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 2.sp,
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceElevated)
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ScoringLine("Base points",       "100 × moves made")
+            ScoringLine("Time bonus",        "+10 per second remaining")
+            ScoringLine("Hint penalty",      "−200 per hint used")
+            ScoringLine("Completion bonus",  "+1000 if all squares visited")
+        }
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+@Composable
+private fun StatCard(label: String, value: String, unit: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceElevated)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(label, color = TextTertiary, fontSize = 10.sp, letterSpacing = 1.5.sp)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(value, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            if (unit.isNotEmpty()) Text(unit, color = TextSecondary, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun ScoringLine(label: String, value: String) {
+    Row(
+        modifier              = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, color = TextSecondary, fontSize = 12.sp)
+        Text(value,  color = TextTertiary,  fontSize = 12.sp)
+    }
 }

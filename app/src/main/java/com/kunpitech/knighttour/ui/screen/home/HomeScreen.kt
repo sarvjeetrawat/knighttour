@@ -546,7 +546,7 @@ private fun HeroSection(
         Spacer(Modifier.height(10.dp))
 
         Text(
-            text      = "THE DEVIL'S GAME",
+            text      = "THE CHALLENGER'S GAME",
             style     = MaterialTheme.knightType.Eyebrow.copy(letterSpacing = 5.sp),
             color     = DevilRed.copy(alpha = 0.7f),
             textAlign = TextAlign.Center,
@@ -747,7 +747,7 @@ private fun ModeCardsSection(
             ModeCardSecondary(
                 modifier    = Modifier.weight(1f),
                 icon        = "😈",
-                title       = "DEVIL",
+                title       = "DEMON",
                 subtitle    = "10×10 · 90s",
                 description = "No hints. No mercy.",
                 accentColor = DevilRed,
