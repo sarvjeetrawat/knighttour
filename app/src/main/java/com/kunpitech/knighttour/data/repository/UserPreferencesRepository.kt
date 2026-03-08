@@ -12,7 +12,9 @@ import com.kunpitech.knighttour.ui.screen.settings.BoardTheme
 import com.kunpitech.knighttour.ui.screen.settings.DefaultDiff
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -25,7 +27,6 @@ import javax.inject.Singleton
 //  Package: data/repository/UserPreferencesRepository.kt
 // ===============================================================
 
-// Top-level DataStore delegate — one instance for the whole app
 private val Context.dataStore: DataStore<Preferences>
         by preferencesDataStore(name = "user_preferences")
 
@@ -40,6 +41,9 @@ data class UserPreferences(
     val boardTheme        : BoardTheme  = BoardTheme.OBSIDIAN,
     val playerName        : String      = "Knight",
     val isSignedIn        : Boolean     = false,
+    // Stable device-local ID — generated once, never changes
+    // Used as hostId/guestId in Firebase so rooms are always owned by the same identity
+    val playerId          : String      = "",
 )
 
 interface UserPreferencesRepository {
@@ -55,6 +59,8 @@ interface UserPreferencesRepository {
     suspend fun setPlayerName(name: String)
     suspend fun setSignedIn(signedIn: Boolean)
     suspend fun clearAll()
+    /** Returns the stable player ID, generating and persisting one if not yet set. */
+    suspend fun getOrCreatePlayerId(): String
 }
 
 // ── Implementation ───────────────────────────────────────────────
@@ -63,8 +69,6 @@ interface UserPreferencesRepository {
 class UserPreferencesRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : UserPreferencesRepository {
-
-    // ── Keys ──────────────────────────────────────────────────────
 
     private object Keys {
         val SOUND_ENABLED       = booleanPreferencesKey("sound_enabled")
@@ -77,9 +81,8 @@ class UserPreferencesRepositoryImpl @Inject constructor(
         val BOARD_THEME         = stringPreferencesKey("board_theme")
         val PLAYER_NAME         = stringPreferencesKey("player_name")
         val IS_SIGNED_IN        = booleanPreferencesKey("is_signed_in")
+        val PLAYER_ID           = stringPreferencesKey("player_id")
     }
-
-    // ── Flow ──────────────────────────────────────────────────────
 
     override val preferences: Flow<UserPreferences> =
         context.dataStore.data.map { prefs ->
@@ -98,10 +101,17 @@ class UserPreferencesRepositoryImpl @Inject constructor(
                 } ?: BoardTheme.OBSIDIAN,
                 playerName        = prefs[Keys.PLAYER_NAME]        ?: "Knight",
                 isSignedIn        = prefs[Keys.IS_SIGNED_IN]       ?: false,
+                playerId          = prefs[Keys.PLAYER_ID]          ?: "",
             )
         }
 
-    // ── Setters ───────────────────────────────────────────────────
+    override suspend fun getOrCreatePlayerId(): String {
+        val existing = context.dataStore.data.first()[Keys.PLAYER_ID]
+        if (!existing.isNullOrEmpty()) return existing
+        val newId = UUID.randomUUID().toString()
+        edit { it[Keys.PLAYER_ID] = newId }
+        return newId
+    }
 
     override suspend fun setSoundEnabled(enabled: Boolean) =
         edit { it[Keys.SOUND_ENABLED] = enabled }
@@ -136,8 +146,6 @@ class UserPreferencesRepositoryImpl @Inject constructor(
     override suspend fun clearAll() {
         context.dataStore.edit { it.clear() }
     }
-
-    // ── Helper ────────────────────────────────────────────────────
 
     private suspend fun edit(transform: (MutablePreferences) -> Unit) {
         context.dataStore.edit(transform)

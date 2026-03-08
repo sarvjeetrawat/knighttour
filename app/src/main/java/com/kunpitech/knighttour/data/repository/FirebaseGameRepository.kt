@@ -137,15 +137,28 @@ class FirebaseGameRepository @Inject constructor() {
         guestName : String,
         boardSize : Int = 6,
     ) {
-        // Reset room node to WAITING state, preserve host/guest names
+        // Read existing room data to preserve fields that might be passed as empty
+        val existingSnap = try { roomRef(roomCode).get().await() } catch (_: Exception) { null }
+        val existingRoomName = existingSnap?.child("roomName")?.getValue(String::class.java)
+            ?.takeIf { it.isNotEmpty() }
+        val existingHostId   = existingSnap?.child("hostId")?.getValue(String::class.java)
+            ?.takeIf { it.isNotEmpty() }
+        val existingHostName = existingSnap?.child("host/name")?.getValue(String::class.java)
+            ?.takeIf { it.isNotEmpty() }
+
+        val resolvedHostId   = hostId.ifEmpty   { existingHostId   ?: hostId }
+        val resolvedHostName = hostName.ifEmpty { existingHostName ?: hostName }
+        val resolvedRoomName = existingRoomName ?: roomCode
+
         val resetRoom = mapOf(
             "status"    to "WAITING",
-            "hostId"    to hostId,
+            "roomName"  to resolvedRoomName,
+            "hostId"    to resolvedHostId,
             "guestId"   to "",
             "boardSize" to boardSize,
             "createdAt" to System.currentTimeMillis(),
             "host"      to mapOf(
-                "name"        to hostName,
+                "name"        to resolvedHostName,
                 "moveCount"   to 0,
                 "isConnected" to true,
                 "moveHistory" to emptyList<Any>(),
@@ -175,24 +188,51 @@ class FirebaseGameRepository @Inject constructor() {
 
         // Reset matchResults — same node, fresh scores
         db.getReference("matchResults/$roomCode").setValue(mapOf(
-            "host"  to mapOf("finalScore" to 0, "name" to hostName,  "isCompleted" to false),
-            "guest" to mapOf("finalScore" to 0, "name" to guestName, "isCompleted" to false),
+            "host"  to mapOf("finalScore" to 0, "name" to resolvedHostName, "isCompleted" to false),
+            "guest" to mapOf("finalScore" to 0, "name" to guestName,        "isCompleted" to false),
         )).await()
 
         // Clear any stale rematch signals
         db.getReference("rematch/$roomCode").removeValue().await()
     }
 
-    /** Join an existing room as guest. Returns true if room exists and is WAITING. */
+    /**
+     * Guest requests to join. Sets status to PENDING_ACCEPT — host must accept before game starts.
+     */
     suspend fun joinRoom(
         roomCode  : String,
         guestId   : String,
         guestName : String,
-    ): Boolean {
+    ): RoomDto? {
         val snapshot = roomRef(roomCode).get().await()
-        if (!snapshot.exists()) return false
+        if (!snapshot.exists()) return null
         val status = snapshot.child("status").getValue(String::class.java)
-        if (status != "WAITING") return false
+        if (status != "WAITING") return null
+
+        roomRef(roomCode).updateChildren(mapOf(
+            "guestId"           to guestId,
+            "status"            to "PENDING_ACCEPT",
+            "guest/name"        to guestName,
+            "guest/isConnected" to true,
+        )).await()
+
+        db.getReference("matchResults/$roomCode/guest/name").setValue(guestName).await()
+
+        return parseRoom(snapshot).copy(
+            guestId = guestId,
+            status  = "PENDING_ACCEPT",
+            guest   = parseRoom(snapshot).guest.copy(name = guestName, isConnected = true),
+        )
+    }
+
+    /** Join directly with PLAYING status — used for rematch (no accept/reject needed). */
+    suspend fun joinRoomDirectly(
+        roomCode  : String,
+        guestId   : String,
+        guestName : String,
+    ): RoomDto? {
+        val snapshot = roomRef(roomCode).get().await()
+        if (!snapshot.exists()) return null
 
         roomRef(roomCode).updateChildren(mapOf(
             "guestId"           to guestId,
@@ -201,9 +241,58 @@ class FirebaseGameRepository @Inject constructor() {
             "guest/isConnected" to true,
         )).await()
 
-        // Update guest name in matchResults
         db.getReference("matchResults/$roomCode/guest/name").setValue(guestName).await()
-        return true
+
+        return parseRoom(snapshot).copy(
+            guestId = guestId,
+            status  = "PLAYING",
+            guest   = parseRoom(snapshot).guest.copy(name = guestName, isConnected = true),
+        )
+    }
+
+    /** Guest quit mid-game — clear guest slot and reset room to WAITING so host can accept new opponent. */
+    suspend fun clearGuestFromRoom(roomCode: String) {
+        try {
+            val snap = roomRef(roomCode).get().await()
+            if (!snap.exists()) return
+            roomRef(roomCode).updateChildren(mapOf(
+                "guestId"           to "",
+                "status"            to "WAITING",
+                "guest/name"        to "",
+                "guest/isConnected" to false,
+                "guest/moveCount"   to 0,
+                "guest/lastMove"    to null,
+                "guest/moveHistory" to null,
+            )).await()
+        } catch (_: Exception) {}
+    }
+
+    /** Host accepts — set PLAYING so both sides navigate to game. */
+    suspend fun acceptGuestJoin(roomCode: String) {
+        roomRef(roomCode).child("status").setValue("PLAYING").await()
+    }
+
+    /** Host rejects — reset room to WAITING and clear guest. */
+    suspend fun rejectGuestJoin(roomCode: String, hostId: String, hostName: String, boardSize: Int) {
+        resetRoomForRematch(
+            roomCode  = roomCode,
+            hostId    = hostId,
+            hostName  = hostName,
+            guestName = "",
+            boardSize = boardSize,
+        )
+    }
+
+
+    /** Host declines — reset room to WAITING and clear guest data. */
+    suspend fun declineGuestJoin(roomCode: String, hostId: String, hostName: String, boardSize: Int) {
+        resetRoomForRematch(
+            roomCode  = roomCode,
+            hostId    = hostId,
+            hostName  = hostName,
+            guestName = "",
+            boardSize = boardSize,
+        )
     }
 
     /** Set room status to PLAYING (called by host when guest joins). */
@@ -289,6 +378,16 @@ class FirebaseGameRepository @Inject constructor() {
             ref.onDisconnect().cancel().await()
         }
         ref.setValue(connected).await()
+    }
+
+    /** Cancel ALL onDisconnect handlers for a room (both host and guest).
+     *  Call this before endSession to prevent stale handlers from recreating
+     *  deleted Firebase nodes on next app launch. */
+    suspend fun cancelAllDisconnectHandlers(roomCode: String) {
+        try {
+            playerRef(roomCode, "host").child("isConnected").onDisconnect().cancel().await()
+            playerRef(roomCode, "guest").child("isConnected").onDisconnect().cancel().await()
+        } catch (_: Exception) {}
     }
 
     /** Register an onDisconnect handler so Firebase auto-clears presence. */
@@ -467,25 +566,40 @@ class FirebaseGameRepository @Inject constructor() {
         sanitizeName(playerName).take(12).uppercase()
 
     /** Find the room code for a given host player name (if any WAITING room exists). */
-    suspend fun findRoomCodeByHost(hostName: String): String? {
+    /**
+     * Find a room code by hostId (top-level field — Firebase RTDB cannot query nested paths).
+     * Returns active rooms only (WAITING, PENDING_ACCEPT, PLAYING).
+     */
+    suspend fun findRoomCodeByHost(hostId: String): String? {
         return try {
+            // Primary: use index (requires ".indexOn": ["hostId"] in Firebase rules)
             val snap = db.getReference("rooms")
-                .orderByChild("host/name")
-                .equalTo(hostName)
+                .orderByChild("hostId")
+                .equalTo(hostId)
                 .get().await()
-            snap.children.firstOrNull { room ->
-                room.child("status").getValue(String::class.java) != "PLAYING" ||
-                        room.child("host/isConnected").getValue(Boolean::class.java) == true
+            val fromIndex = snap.children.firstOrNull { room ->
+                val status = room.child("status").getValue(String::class.java)
+                status == "WAITING" || status == "PENDING_ACCEPT" || status == "PLAYING"
+            }?.key
+            if (fromIndex != null) return fromIndex
+
+            // Fallback: full scan (slower but works without index)
+            val allSnap = db.getReference("rooms").get().await()
+            allSnap.children.firstOrNull { room ->
+                val rHostId = room.child("hostId").getValue(String::class.java)
+                val status  = room.child("status").getValue(String::class.java)
+                rHostId == hostId &&
+                        (status == "WAITING" || status == "PENDING_ACCEPT" || status == "PLAYING")
             }?.key
         } catch (_: Exception) { null }
     }
 
     /** Check if a player already has an open (WAITING) room in Firebase. */
-    suspend fun playerHasOpenRoom(playerName: String): Boolean {
+    suspend fun playerHasOpenRoom(hostId: String): Boolean {
         return try {
             val snap = db.getReference("rooms")
-                .orderByChild("host/name")
-                .equalTo(playerName)
+                .orderByChild("hostId")
+                .equalTo(hostId)
                 .get().await()
             snap.children.any { room ->
                 room.child("status").getValue(String::class.java) == "WAITING" &&
@@ -548,7 +662,8 @@ class FirebaseGameRepository @Inject constructor() {
                 val now = System.currentTimeMillis()
                 val rooms = snap.children.mapNotNull { roomSnap ->
                     val status = roomSnap.child("status").getValue(String::class.java)
-                    if (status != "WAITING") return@mapNotNull null
+                    if (status != "WAITING" && status != "PENDING_ACCEPT") return@mapNotNull null
+                    val isPending = status == "PENDING_ACCEPT"
 
                     val hostName  = roomSnap.child("host/name").getValue(String::class.java) ?: return@mapNotNull null
                     if (hostName.isEmpty()) return@mapNotNull null
@@ -575,6 +690,7 @@ class FirebaseGameRepository @Inject constructor() {
                         createdAt       = createdAt,
                         isHostConnected = isConnected,
                         isOwn           = hostName == myName,
+                        isPending       = isPending,
                     )
                 }.sortedWith(
                     // Own room pinned to top, then newest first
@@ -592,10 +708,73 @@ class FirebaseGameRepository @Inject constructor() {
     }
 
     /**
-
-     * Fetch all rooms that contain a player with the given name (as host or guest).
-     * Used by leaderboard to find opponent scores.
+     * Find a room where this player is the guest (PENDING_ACCEPT or PLAYING).
+     * Used to restore guest presence on app reopen.
      */
+    suspend fun findRoomByGuest(guestId: String): Pair<String, String>? {
+        // Pair = (roomCode, status)
+        return try {
+            // Try indexed query first
+            val snap = db.getReference("rooms")
+                .orderByChild("guestId")
+                .equalTo(guestId)
+                .get().await()
+            var result = snap.children.firstOrNull { room ->
+                val status = room.child("status").getValue(String::class.java)
+                status == "PENDING_ACCEPT" || status == "PLAYING"
+            }?.let { room ->
+                val status = room.child("status").getValue(String::class.java) ?: return@let null
+                room.key?.let { it to status }
+            }
+            if (result != null) return result
+
+            // Fallback: full scan
+            val allSnap = db.getReference("rooms").get().await()
+            result = allSnap.children.firstOrNull { room ->
+                val rGuestId = room.child("guestId").getValue(String::class.java)
+                val status   = room.child("status").getValue(String::class.java)
+                rGuestId == guestId &&
+                        (status == "PENDING_ACCEPT" || status == "PLAYING")
+            }?.let { room ->
+                val status = room.child("status").getValue(String::class.java) ?: return@let null
+                room.key?.let { it to status }
+            }
+            result
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * If both host and guest are disconnected and room is not WAITING/FINISHED,
+     * reset room back to WAITING so it reappears in browse.
+     * Call this periodically or on app open.
+     */
+    suspend fun resetIfBothDisconnected(roomCode: String) {
+        try {
+            val snap   = roomRef(roomCode).get().await()
+            if (!snap.exists()) return
+            val status      = snap.child("status").getValue(String::class.java) ?: return
+            if (status == "WAITING" || status == "FINISHED") return
+            val hostConn  = snap.child("host/isConnected").getValue(Boolean::class.java) ?: false
+            val guestConn = snap.child("guest/isConnected").getValue(Boolean::class.java) ?: false
+            if (!hostConn && !guestConn) {
+                // Both gone — reset to WAITING so host can get new guests
+                roomRef(roomCode).updateChildren(mapOf(
+                    "status"            to "WAITING",
+                    "guestId"           to "",
+                    "guest/name"        to "",
+                    "guest/isConnected" to false,
+                    "guest/moveCount"   to 0,
+                    "guest/moveHistory" to null,
+                )).await()
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Get or reset a player's persistent room.
+     */
+   /* Used by leaderboard to find opponent scores.
+    */
     suspend fun getRoomsForPlayer(playerName: String): List<RoomDto> {
         return try {
             val snap = db.getReference("rooms").get().await()
@@ -839,6 +1018,7 @@ data class RoomBrowserEntry(
     val createdAt      : Long,
     val isHostConnected: Boolean = true,
     val isOwn          : Boolean = false,
+    val isPending      : Boolean = false,     // true = guest sent request, waiting for host
 )
 
 data class FirebaseScoreEntry(

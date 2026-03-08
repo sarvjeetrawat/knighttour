@@ -82,9 +82,13 @@ fun KnightTourNavHost(
                     )
                 },
                 onResumeGame = { sessionId ->
-                    // Pass the real session ID so GameViewModel resumes existing state
                     navController.navigate(
                         Screen.Game.createRoute(sessionId = sessionId)
+                    )
+                },
+                onAcceptGame = { roomCode ->
+                    navController.navigate(
+                        Screen.Game.createRoute(gameMode = "ONLINE", roomCode = roomCode)
                     )
                 },
                 onOpenLeaderboard = { navController.navigate(Screen.Leaderboard.route) },

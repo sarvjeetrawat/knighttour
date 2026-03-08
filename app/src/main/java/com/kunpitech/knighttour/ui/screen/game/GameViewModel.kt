@@ -65,8 +65,13 @@ class GameViewModel @Inject constructor(
     private val _currentSessionId = MutableStateFlow("")
     val currentSessionId: StateFlow<String> = _currentSessionId.asStateFlow()
 
+    // Fired when QuitOnline completes cleanup — GameRoute observes this to navigate back
+    private val _navigateBack = MutableStateFlow(false)
+    val navigateBack: StateFlow<Boolean> = _navigateBack.asStateFlow()
+
     private var session: GameSession? = null
     private var timerJob: Job? = null
+    private var disconnectTimeoutJob: Job? = null  // auto-ends game if opponent stays disconnected
 
     init {
         val sessionId = savedStateHandle.get<String>("sessionId") ?: ""
@@ -176,6 +181,7 @@ class GameViewModel @Inject constructor(
             GameEvent.Restart       -> session?.let {
                 newGame(it.difficulty, it.mode, it.roomCode)
             }
+            GameEvent.QuitOnline    -> handleQuitOnline()
         }
     }
 
@@ -484,15 +490,40 @@ class GameViewModel @Inject constructor(
                         }
                     }
                     is RoomEvent.OpponentDisconnected -> {
-                        // Only show disconnect tag during active gameplay, not during end/rematch phase
-                        if (_uiState.value.gameState == GamePhase.PLAYING) {
+                        val phase = _uiState.value.gameState
+                        if (phase == GamePhase.PLAYING || phase == GamePhase.PAUSED) {
                             _uiState.update { it.copy(opponentName = "${it.opponentName} (disconnected)") }
                         }
+                        _uiState.update { it.copy(opponentDisconnected = true) }
+                        // Start 30s countdown — if still disconnected, auto-end game
+                        disconnectTimeoutJob?.cancel()
+                        disconnectTimeoutJob = viewModelScope.launch {
+                            kotlinx.coroutines.delay(30_000)
+                            val current = session
+                            sessionManager.snapshotLastSession()
+                            viewModelScope.launch {
+                                sessionManager.markLocalFinished(
+                                    finalScore  = current?.score ?: 0,
+                                    moveCount   = current?.moveCount ?: 0,
+                                    isCompleted = _uiState.value.gameState == GamePhase.COMPLETED ||
+                                            _uiState.value.gameState == GamePhase.WAITING_FOR_OPPONENT,
+                                )
+                                sessionManager.endSession()
+                            }
+                            _uiState.update { it.copy(
+                                opponentDisconnected = false,
+                                gameState            = GamePhase.ONLINE_GAME_OVER,
+                            )}
+                        }
                     }
-                    is RoomEvent.OpponentReconnected  ->
+                    is RoomEvent.OpponentReconnected  -> {
+                        disconnectTimeoutJob?.cancel()
+                        disconnectTimeoutJob = null
                         _uiState.update { it.copy(
-                            opponentName = sessionManager.currentSession()?.opponentName ?: it.opponentName
+                            opponentDisconnected = false,
+                            opponentName = sessionManager.currentSession()?.opponentName ?: it.opponentName,
                         ) }
+                    }
                     is RoomEvent.OpponentMoved -> {
                         // Update live opponent board for waiting overlay
                         val size  = sessionManager.currentSession()?.boardSize ?: 6
@@ -590,6 +621,28 @@ class GameViewModel @Inject constructor(
                 // deleteRoom=false = mid-game quit, reset room immediately with no delay
                 sessionManager.endSession(deleteRoom = false)
             }
+        }
+    }
+
+    /** Host/guest tapped QUIT during online game — end session cleanly then navigate back. */
+    private fun handleQuitOnline() {
+        if (!_uiState.value.isOnlineMode) {
+            _navigateBack.value = true
+            return
+        }
+        val current = session
+        viewModelScope.launch {
+            try {
+                if (current != null) {
+                    gameRepository.save(current.copy(status = SessionStatus.ABANDONED))
+                    sessionManager.markLocalFinished(
+                        finalScore = current.score,
+                        moveCount  = current.moveCount,
+                    )
+                }
+                sessionManager.endSession(deleteRoom = false)
+            } catch (_: Exception) {}
+            _navigateBack.value = true
         }
     }
 

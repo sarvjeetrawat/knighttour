@@ -338,6 +338,7 @@ class ResultViewModel @Inject constructor(
 
                             // Room already reset above — just attach session + observer
                             sessionManager.attachToExistingRoom(
+                                localId   = prefsRepository.getOrCreatePlayerId(),
                                 localName = state.localName,
                                 roomCode  = roomCode,
                                 boardSize = state.boardSize,
@@ -353,8 +354,9 @@ class ResultViewModel @Inject constructor(
                             if (!ready) return@collect
                             _uiState.update { it.copy(rematchState = RematchState.STARTING) }
 
-                            // Room is now in WAITING state — safe to join
-                            val joined = sessionManager.joinRoom(
+                            // Room is now in WAITING state — safe to join directly (no accept needed for rematch)
+                            val joined = sessionManager.joinRoomForRematch(
+                                localId   = prefsRepository.getOrCreatePlayerId(),
                                 roomCode  = roomCode,
                                 localName = state.localName,
                                 scope     = viewModelScope,

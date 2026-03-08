@@ -10,7 +10,10 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,8 +28,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -34,13 +39,17 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -50,7 +59,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -246,6 +254,85 @@ fun LobbyScreen(
 
             Spacer(Modifier.height(24.dp))
         }
+
+        // ── JOINING OVERLAY ───────────────────────────────────────
+        if (uiState.isJoining) {
+            Box(
+                modifier         = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.75f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                ) {
+                    CircularProgressIndicator(
+                        color       = KnightGold,
+                        strokeWidth = 3.dp,
+                        modifier    = Modifier.size(48.dp),
+                    )
+                    Text(
+                        text  = "JOINING ROOM…",
+                        style = MaterialTheme.knightType.StatLabel.copy(letterSpacing = 4.sp),
+                        color = KnightGold,
+                    )
+                }
+            }
+        }
+
+        // ── REQUEST SENT OVERLAY (Guest waiting for host) ─────────
+        if (uiState.requestSent) {
+            Box(
+                modifier         = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.75f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    modifier            = Modifier
+                        .padding(horizontal = 32.dp)
+                        .background(
+                            Brush.verticalGradient(listOf(SurfaceElevated, SurfaceDark)),
+                            KnightTourShapes.large,
+                        )
+                        .border(BorderWidth.default, OnlineTeal.copy(alpha = 0.40f), KnightTourShapes.large)
+                        .padding(28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    CircularProgressIndicator(color = OnlineTeal, strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
+                    Text(
+                        text      = "REQUEST SENT",
+                        style     = MaterialTheme.knightType.ScreenHeader.copy(letterSpacing = 4.sp),
+                        color     = KnightGold,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text      = "Waiting for host to accept…",
+                        style     = MaterialTheme.knightType.BodySecondary,
+                        color     = TextSecondary,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+
+        // ── INCOMING REQUEST BANNER (Host in lobby) — always on top ──
+        AnimatedVisibility(
+            visible  = uiState.hasIncomingGuest,
+            enter    = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit     = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .zIndex(10f),                // always above requestSent overlay
+        ) {
+            GameRequestBanner(
+                guestName = uiState.incomingGuestName,
+                onAccept  = { onEvent(LobbyEvent.AcceptGuest) },
+                onReject  = { onEvent(LobbyEvent.RejectGuest) },
+            )
+        }
     }
 }
 
@@ -264,7 +351,7 @@ private fun CreateTab(
         modifier            = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        if (!uiState.isWaiting) {
+        if (!uiState.roomCreated) {
 
             // ── Room name input ──────────────────────────────────
             Text(
@@ -355,7 +442,7 @@ private fun CreateTab(
             WaitingCard(
                 roomCode     = uiState.generatedCode,
                 boardSize    = uiState.selectedSize.label,
-                onCancel     = { onEvent(LobbyEvent.CancelWaiting) },
+                onCancel     = { onEvent(LobbyEvent.CancelRoom) },
             )
         }
     }
@@ -656,20 +743,22 @@ private fun RoomCard(
 ) {
     val isDisconnected = !room.isHostConnected
     val dotColor = when {
-        room.isOwn     -> Color(0xFFD4A843)          // gold for own room
-        isDisconnected -> Color(0xFFE05050)           // red for disconnected
-        else           -> OnlineTeal                  // teal for active
+        room.isOwn     -> Color(0xFFD4A843)
+        room.isPending -> Color(0xFFE05050)           // red — request in progress
+        isDisconnected -> Color(0xFFE05050)
+        else           -> OnlineTeal
     }
     val borderColor = when {
         room.isOwn     -> Color(0xFFD4A843).copy(alpha = 0.4f)
+        room.isPending -> Color(0xFFE05050).copy(alpha = 0.25f)
         isDisconnected -> Color(0xFFE05050).copy(alpha = 0.25f)
         else           -> OnlineTeal.copy(alpha = 0.25f)
     }
 
     val pulse by rememberInfiniteTransition(label = "live")
         .animateFloat(
-            initialValue  = if (isDisconnected) 0.3f else 0.4f,
-            targetValue   = if (isDisconnected) 0.3f else 1f,   // no pulse when disconnected
+            initialValue  = if (isDisconnected || room.isPending) 0.3f else 0.4f,
+            targetValue   = if (isDisconnected || room.isPending) 0.3f else 1f,
             animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
             label         = "live",
         )
@@ -683,8 +772,8 @@ private fun RoomCard(
         }
     }
 
-    // Own room is not joinable — you're already hosting it
-    val canJoin = enabled && !room.isOwn && !isDisconnected
+    // Pending rooms and own rooms are not joinable
+    val canJoin = enabled && !room.isOwn && !isDisconnected && !room.isPending
 
     Row(
         modifier = Modifier
@@ -724,7 +813,6 @@ private fun RoomCard(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    // "YOUR ROOM" badge on own room
                     if (room.isOwn) {
                         Box(
                             modifier = Modifier
@@ -735,6 +823,19 @@ private fun RoomCard(
                                 text  = "YOUR ROOM",
                                 style = MaterialTheme.knightType.StatLabel.copy(fontSize = 9.sp),
                                 color = Color(0xFFD4A843),
+                            )
+                        }
+                    }
+                    if (room.isPending) {
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFFE05050).copy(alpha = 0.15f), KnightTourShapes.extraSmall)
+                                .padding(horizontal = 6.dp, vertical = 1.dp),
+                        ) {
+                            Text(
+                                text  = "REQUEST PENDING",
+                                style = MaterialTheme.knightType.StatLabel.copy(fontSize = 9.sp),
+                                color = Color(0xFFE05050),
                             )
                         }
                     }
@@ -755,9 +856,16 @@ private fun RoomCard(
                         )
                     }
                     Text(
-                        text     = if (isDisconnected) "⚠ host left" else "by ${room.hostName}  ·  $waitingSince",
+                        text     = when {
+                            isDisconnected -> "⚠ host left"
+                            room.isPending -> "request in progress"
+                            else           -> "by ${room.hostName}  ·  $waitingSince"
+                        },
                         style    = MaterialTheme.knightType.StatLabel,
-                        color    = if (isDisconnected) Color(0xFFE05050).copy(alpha = 0.7f) else TextTertiary,
+                        color    = when {
+                            isDisconnected || room.isPending -> Color(0xFFE05050).copy(alpha = 0.7f)
+                            else -> TextTertiary
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -777,6 +885,18 @@ private fun RoomCard(
                     text  = "WAITING",
                     style = MaterialTheme.knightType.ButtonPrimary.copy(fontSize = 11.sp),
                     color = Color(0xFFD4A843),
+                )
+            }
+            room.isPending -> Box(
+                modifier = Modifier
+                    .background(Color.Transparent, KnightTourShapes.small)
+                    .border(BorderWidth.default, Color(0xFFE05050).copy(alpha = 0.35f), KnightTourShapes.small)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text  = "TAKEN",
+                    style = MaterialTheme.knightType.ButtonPrimary.copy(fontSize = 11.sp),
+                    color = Color(0xFFE05050).copy(alpha = 0.7f),
                 )
             }
             isDisconnected -> Box(
@@ -851,9 +971,9 @@ private fun WaitingCard(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "SHARE THIS CODE",
+                    "✓  ROOM CREATED",
                     style = MaterialTheme.knightType.StatLabel.copy(letterSpacing = 3.sp),
-                    color = TextTertiary,
+                    color = OnlineTeal,
                 )
                 Text(
                     text      = roomCode.chunked(3).joinToString("  "),
@@ -891,7 +1011,7 @@ private fun WaitingCard(
                 strokeWidth = 2.dp,
             )
             Text(
-                "Waiting for opponent to join…",
+                "Waiting for a player to send a request…",
                 style = MaterialTheme.knightType.BodySecondary,
                 color = OnlineTeal,
             )
@@ -960,6 +1080,87 @@ private fun LobbyButton(
                 style = MaterialTheme.knightType.ButtonPrimary,
                 color = color,
             )
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  GAME REQUEST BANNER  (slides in from top, non-blocking)
+// ════════════════════════════════════════════════════════════════
+
+@Composable
+private fun GameRequestBanner(
+    guestName : String,
+    onAccept  : () -> Unit,
+    onReject  : () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            shape           = RoundedCornerShape(12.dp),
+            color           = Color(0xCC1A1A2E),
+            border          = BorderStroke(1.dp, Color(0xFFD4A843)),
+            modifier        = Modifier.fillMaxWidth(),
+            shadowElevation = 8.dp,
+        ) {
+            Row(
+                modifier          = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("⚔️", fontSize = 18.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text          = "$guestName wants to play!",
+                        color         = Color(0xFFD4A843),
+                        fontSize      = 13.sp,
+                        fontWeight    = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                        maxLines      = 1,
+                        overflow      = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text     = "Tap ACCEPT to start the game",
+                        color    = Color(0xFFB0B0C0),
+                        fontSize = 11.sp,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .background(OnlineTeal.copy(alpha = 0.20f), RoundedCornerShape(8.dp))
+                        .border(1.dp, OnlineTeal.copy(alpha = 0.70f), RoundedCornerShape(8.dp))
+                        .clickable { onAccept() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text          = "ACCEPT",
+                        color         = OnlineTeal,
+                        fontSize      = 11.sp,
+                        fontWeight    = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .background(Color.Transparent, RoundedCornerShape(8.dp))
+                        .border(1.dp, BloodRedBright.copy(alpha = 0.40f), RoundedCornerShape(8.dp))
+                        .clickable { onReject() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text       = "✕",
+                        color      = BloodRedBright.copy(alpha = 0.80f),
+                        fontSize   = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
         }
     }
 }

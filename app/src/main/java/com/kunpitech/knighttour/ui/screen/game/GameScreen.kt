@@ -65,6 +65,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.font.FontFamily
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -289,7 +292,10 @@ fun GameScreen(
             PauseOverlay(
                 onResume     = { onEvent(GameEvent.Resume) },
                 onRestart    = { onEvent(GameEvent.Restart) },
-                onQuit       = onNavigateBack,
+                onQuit       = {
+                    if (uiState.isOnlineMode) onEvent(GameEvent.QuitOnline)
+                    else onNavigateBack()
+                },
                 isOnlineMode = uiState.isOnlineMode,
             )
         }
@@ -1032,7 +1038,6 @@ private fun WaitingForOpponentToFinishOverlay(uiState: GameUiState) {
             verticalArrangement = Arrangement.spacedBy(20.dp),
             modifier = Modifier.padding(24.dp),
         ) {
-            // Your score
             Text(
                 text = "YOU FINISHED",
                 color = Color(0xFFD4A843),
@@ -1049,38 +1054,74 @@ private fun WaitingForOpponentToFinishOverlay(uiState: GameUiState) {
 
             Spacer(Modifier.height(4.dp))
 
-            // Opponent section
-            val opponentName = uiState.opponentName.ifEmpty { "Opponent" }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                // Pulsing dot
-                val pulse by rememberInfiniteTransition(label = "dot")
-                    .animateFloat(
-                        initialValue = 0.4f,
-                        targetValue  = 1f,
-                        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
-                        label = "dot",
+            val opponentName = uiState.opponentName
+                .removeSuffix(" (disconnected)")
+                .ifEmpty { "Opponent" }
+
+            if (uiState.opponentDisconnected) {
+                // ── Disconnect warning with countdown ────────────
+                var secondsLeft by remember { mutableIntStateOf(30) }
+                LaunchedEffect(Unit) {
+                    while (secondsLeft > 0) {
+                        delay(1_000)
+                        secondsLeft--
+                    }
+                }
+                Surface(
+                    shape  = RoundedCornerShape(12.dp),
+                    color  = Color(0xFF1A0A0A),
+                    border = BorderStroke(1.dp, Color(0xFFE05050).copy(alpha = 0.5f)),
+                ) {
+                    Column(
+                        modifier            = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text      = "⚠  $opponentName disconnected",
+                            color     = Color(0xFFE05050),
+                            fontSize  = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text     = "Auto-ending in ${secondsLeft}s…",
+                            color    = Color(0xFFB0B0C0),
+                            fontSize = 12.sp,
+                        )
+                    }
+                }
+            } else {
+                // ── Normal: opponent still playing ───────────────
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val pulse by rememberInfiniteTransition(label = "dot")
+                        .animateFloat(
+                            initialValue  = 0.4f,
+                            targetValue   = 1f,
+                            animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+                            label         = "dot",
+                        )
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .background(Color(0xFF4CAF50).copy(alpha = pulse), CircleShape)
                     )
-                Box(
-                    Modifier
-                        .size(8.dp)
-                        .background(Color(0xFF4CAF50).copy(alpha = pulse), CircleShape)
-                )
-                Text(
-                    text = "$opponentName is still playing...",
-                    color = Color(0xFFB0B0C0),
-                    fontSize = 14.sp,
-                )
+                    Text(
+                        text  = "$opponentName is still playing...",
+                        color = Color(0xFFB0B0C0),
+                        fontSize = 14.sp,
+                    )
+                }
             }
 
             // Live opponent board
             if (uiState.opponentCells.isNotEmpty()) {
-                val size  = uiState.boardSize
+                val size   = uiState.boardSize
                 val cellPx = (260.dp / size)
                 Text(
-                    text = "${uiState.opponentMoves} / ${size * size} squares",
+                    text  = "${uiState.opponentMoves} / ${size * size} squares",
                     color = Color(0xFF888899),
                     fontSize = 12.sp,
                 )
@@ -1124,10 +1165,9 @@ private fun WaitingForOpponentToFinishOverlay(uiState: GameUiState) {
                         }
                     }
                 }
-            } else {
-                // No moves yet — show waiting dots
+            } else if (!uiState.opponentDisconnected) {
                 Text(
-                    text = "Waiting for first move...",
+                    text  = "Waiting for first move...",
                     color = Color(0xFF666677),
                     fontSize = 13.sp,
                 )
@@ -1522,8 +1562,14 @@ fun GameRoute(
     onNavigateResult : (String) -> Unit,
     viewModel        : GameViewModel = hiltViewModel(),
 ) {
-    val uiState   by viewModel.uiState.collectAsStateWithLifecycle()
-    val sessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
+    val uiState      by viewModel.uiState.collectAsStateWithLifecycle()
+    val sessionId    by viewModel.currentSessionId.collectAsStateWithLifecycle()
+    val navigateBack by viewModel.navigateBack.collectAsStateWithLifecycle()
+
+    // QuitOnline cleanup completed — navigate back
+    LaunchedEffect(navigateBack) {
+        if (navigateBack) onNavigateBack()
+    }
 
     // Navigate to result after game ends
     val gameState = uiState.gameState

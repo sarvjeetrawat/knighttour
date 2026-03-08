@@ -112,4 +112,6 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
 
     implementation(libs.datastore.preferences)
+
+    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
 }

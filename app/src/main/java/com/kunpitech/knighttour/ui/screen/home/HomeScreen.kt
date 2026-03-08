@@ -1,9 +1,19 @@
 package com.kunpitech.knighttour.ui.screen.home
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -21,6 +31,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.*
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kunpitech.knighttour.ui.theme.*
 import kotlinx.coroutines.delay
@@ -214,6 +225,103 @@ fun HomeScreen(
             )
 
             Spacer(Modifier.height(40.dp))
+        }
+
+        // ── INCOMING GAME REQUEST BANNER ──────────────────────────
+        AnimatedVisibility(
+            visible  = uiState.hasIncomingGame,
+            enter    = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+            exit     = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter),
+        ) {
+            GameRequestBanner(
+                guestName = uiState.incomingGuestName,
+                onAccept  = { onEvent(HomeEvent.GoToGame) },
+                onReject  = { onEvent(HomeEvent.RejectGame) },
+            )
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  GAME REQUEST BANNER
+// ═══════════════════════════════════════════════════════════════
+
+@Composable
+private fun GameRequestBanner(
+    guestName : String,
+    onAccept  : () -> Unit,
+    onReject  : () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Surface(
+            shape           = RoundedCornerShape(12.dp),
+            color           = Color(0xCC1A1A2E),
+            border          = BorderStroke(1.dp, Color(0xFFD4A843)),
+            modifier        = Modifier.fillMaxWidth(),
+            shadowElevation = 8.dp,
+        ) {
+            Row(
+                modifier          = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("⚔️", fontSize = 18.sp)
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text          = "$guestName wants to play!",
+                        color         = Color(0xFFD4A843),
+                        fontSize      = 13.sp,
+                        fontWeight    = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                        maxLines      = 1,
+                        overflow      = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text     = "Tap ACCEPT to start the game",
+                        color    = Color(0xFFB0B0C0),
+                        fontSize = 11.sp,
+                    )
+                }
+                // ACCEPT
+                Box(
+                    modifier = Modifier
+                        .background(OnlineTeal.copy(alpha = 0.20f), RoundedCornerShape(8.dp))
+                        .border(1.dp, OnlineTeal.copy(alpha = 0.70f), RoundedCornerShape(8.dp))
+                        .clickable { onAccept() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text          = "ACCEPT",
+                        color         = OnlineTeal,
+                        fontSize      = 11.sp,
+                        fontWeight    = FontWeight.Bold,
+                        letterSpacing = 0.8.sp,
+                    )
+                }
+                // REJECT
+                Box(
+                    modifier = Modifier
+                        .background(Color.Transparent, RoundedCornerShape(8.dp))
+                        .border(1.dp, BloodRedBright.copy(alpha = 0.40f), RoundedCornerShape(8.dp))
+                        .clickable { onReject() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text          = "✕",
+                        color         = BloodRedBright.copy(alpha = 0.80f),
+                        fontSize      = 12.sp,
+                        fontWeight    = FontWeight.Bold,
+                    )
+                }
+            }
         }
     }
 }
@@ -438,7 +546,7 @@ private fun HeroSection(
         Spacer(Modifier.height(10.dp))
 
         Text(
-            text      = "THE KNIGHT’S CHALLENGE",
+            text      = "THE DEVIL'S GAME",
             style     = MaterialTheme.knightType.Eyebrow.copy(letterSpacing = 5.sp),
             color     = DevilRed.copy(alpha = 0.7f),
             textAlign = TextAlign.Center,
@@ -639,7 +747,7 @@ private fun ModeCardsSection(
             ModeCardSecondary(
                 modifier    = Modifier.weight(1f),
                 icon        = "😈",
-                title       = "DEMON",
+                title       = "DEVIL",
                 subtitle    = "10×10 · 90s",
                 description = "No hints. No mercy.",
                 accentColor = DevilRed,
@@ -958,13 +1066,36 @@ fun HomeRoute(
     onPlayOnline      : () -> Unit,
     onPlayDevil       : () -> Unit,
     onResumeGame      : (sessionId: String) -> Unit,
+    onAcceptGame      : (roomCode: String) -> Unit,
     onOpenLeaderboard : () -> Unit,
     onOpenSettings    : () -> Unit,
     onOpenDaily       : () -> Unit,
     viewModel         : HomeViewModel = hiltViewModel(),
 ) {
-    val uiState       by viewModel.uiState.collectAsStateWithLifecycle()
-    val resumeSession by viewModel.resumeSessionId.collectAsStateWithLifecycle()
+    val uiState        by viewModel.uiState.collectAsStateWithLifecycle()
+    val resumeSession  by viewModel.resumeSessionId.collectAsStateWithLifecycle()
+    val navigateToGame by viewModel.navigateToGame.collectAsStateWithLifecycle()
+
+    // Restart room watcher every time Home screen becomes visible
+    // (covers case where host created a room then navigated back to Home)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.startWatchingRoom(viewModel.uiState.value.playerName)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Navigate to game when host accepts incoming challenge
+    LaunchedEffect(navigateToGame) {
+        navigateToGame?.let { roomCode ->
+            viewModel.onNavigateToGameHandled()
+            onAcceptGame(roomCode)
+        }
+    }
 
     HomeScreen(
         uiState = uiState,
@@ -978,6 +1109,8 @@ fun HomeRoute(
                 HomeEvent.OpenSettings          -> onOpenSettings()
                 HomeEvent.OpenDailyChallenge    -> onOpenDaily()
                 is HomeEvent.SelectDifficulty   -> viewModel.onEvent(event)
+                HomeEvent.GoToGame              -> viewModel.onEvent(HomeEvent.GoToGame)
+                HomeEvent.RejectGame            -> viewModel.onEvent(HomeEvent.RejectGame)
             }
         }
     )

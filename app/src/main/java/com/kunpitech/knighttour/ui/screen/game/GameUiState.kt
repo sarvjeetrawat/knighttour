@@ -47,6 +47,7 @@ data class GameUiState(
     val roomCode          : String          = "",
     val waitingForOpponent: Boolean         = false,   // host waiting on game screen
     val opponentFinished  : Boolean         = false,   // opponent stuck, we can still play
+    val opponentDisconnected: Boolean       = false,   // opponent left — countdown running
     val isRematch         : Boolean         = false,   // rematch — no code sharing needed
 
     // Score
@@ -76,11 +77,12 @@ enum class DifficultyUi(
 
 sealed interface GameEvent {
     data class CellTapped(val row: Int, val col: Int) : GameEvent
-    data object Undo    : GameEvent
-    data object Hint    : GameEvent
-    data object Pause   : GameEvent
-    data object Resume  : GameEvent
-    data object Restart : GameEvent
+    data object Undo       : GameEvent
+    data object Hint       : GameEvent
+    data object Pause      : GameEvent
+    data object Resume     : GameEvent
+    data object Restart    : GameEvent
+    data object QuitOnline : GameEvent  // ends online session cleanly before navigating back
 }
 
 fun buildInitialCells(size: Int): List<CellState> =
