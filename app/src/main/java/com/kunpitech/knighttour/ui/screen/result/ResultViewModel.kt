@@ -134,7 +134,7 @@ class ResultViewModel @Inject constructor(
                 observeOpponentPresence(roomCode, localRole)
                 // Clear our own stale signal from any previous rematch
                 // so we start clean — does NOT clear opponent's signal
-                try { firebaseRepo.clearMyRematchSignal(roomCode, localRole) } catch (_: Exception) {}
+                try { firebaseRepo.clearRematchSignal(roomCode, localRole) } catch (_: Exception) {}
             }
         }
     }
@@ -146,15 +146,21 @@ class ResultViewModel @Inject constructor(
     private fun observeOpponentPresence(roomCode: String, localRole: String) {
         val opponentRole = if (localRole == "host") "guest" else "host"
         viewModelScope.launch {
-            // Small delay — give Firebase time to settle after game end
-            // (endSession sets isConnected=false, we don't want to react to that)
-            kotlinx.coroutines.delay(3000)
+            // Longer delay — endSession sets isConnected=false and then resetRoomForRematch
+            // sets host isConnected=true. We must wait past both of those writes.
+            kotlinx.coroutines.delay(5000)
+            var wasConnected = false
             firebaseRepo.observeOpponent(roomCode, opponentRole)
                 .collect { state ->
-                    // Only reset rematch waiting if we're actually waiting for them
-                    val currentRematch = _uiState.value.rematchState
-                    if (!state.isConnected && currentRematch == RematchState.WAITING) {
-                        _uiState.update { it.copy(rematchState = RematchState.IDLE) }
+                    if (state.isConnected) {
+                        // Opponent is on the result screen and connected
+                        wasConnected = true
+                    } else if (wasConnected) {
+                        // They were connected (on result screen), now they left — reset
+                        val currentRematch = _uiState.value.rematchState
+                        if (currentRematch == RematchState.WAITING) {
+                            _uiState.update { it.copy(rematchState = RematchState.IDLE) }
+                        }
                     }
                 }
         }
@@ -315,13 +321,15 @@ class ResultViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Step 1: Signal we're ready (overwrites any stale value for our role only)
-                // Do NOT clear the whole node — that would wipe the opponent's signal too
+                // Record when this rematch round started — used to filter out stale signals
+                val roundStartedAt = System.currentTimeMillis()
+
+                // Signal ready with current timestamp
                 firebaseRepo.signalRematch(roomCode, state.localRole)
 
                 if (isHost) {
-                    // Step 2 (Host): Wait for guest to also signal, then reset room
-                    firebaseRepo.observeRematch(roomCode)
+                    // Wait for guest to also signal with a timestamp newer than roundStartedAt
+                    firebaseRepo.observeRematch(roomCode, roundStartedAt)
                         .collect {
                             _uiState.update { it.copy(rematchState = RematchState.STARTING) }
 
@@ -333,16 +341,19 @@ class ResultViewModel @Inject constructor(
                                 guestName = state.opponentName,
                                 boardSize = state.boardSize,
                             )
+                            // Small delay to let room reset propagate before signalling guest
+                            kotlinx.coroutines.delay(300)
                             // Signal guest that room is ready to join
+                            // NOTE: do NOT clearRematch here — guest reads roomReady from this node.
+                            // Guest will clear the rematch node after successfully joining.
                             firebaseRepo.signalRoomReady(roomCode)
 
-                            // Room already reset above — just attach session + observer
+                            // Attach host session observer for the new game
                             sessionManager.attachToExistingRoom(
                                 localId   = prefsRepository.getOrCreatePlayerId(),
                                 localName = state.localName,
                                 roomCode  = roomCode,
                                 boardSize = state.boardSize,
-                                scope     = viewModelScope,
                             )
                             onStartRematch(roomCode, true)
                             return@collect
@@ -359,9 +370,10 @@ class ResultViewModel @Inject constructor(
                                 localId   = prefsRepository.getOrCreatePlayerId(),
                                 roomCode  = roomCode,
                                 localName = state.localName,
-                                scope     = viewModelScope,
                             )
                             if (joined) {
+                                // Clean up rematch node now that guest has joined successfully
+                                try { firebaseRepo.clearRematch(roomCode) } catch (_: Exception) {}
                                 onStartRematch(roomCode, false)
                             } else {
                                 _uiState.update { it.copy(rematchState = RematchState.IDLE) }
@@ -393,7 +405,7 @@ class ResultViewModel @Inject constructor(
                 val isHost   = role == "host"
 
                 // Cancel only our own pending signal — don't wipe opponent's
-                firebaseRepo.clearMyRematchSignal(roomCode, role)
+                firebaseRepo.clearRematchSignal(roomCode, role)
 
                 if (isHost) {
                     // Host: reset room back to WAITING so it stays available for next challenger

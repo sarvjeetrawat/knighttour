@@ -66,6 +66,10 @@ class OnlineSessionManager @Inject constructor(
     private var session: OnlineSession? = null
     private var lastSession: OnlineSession? = null
 
+    // Set to true when player intentionally quits mid-game — suppresses auto-reconnect in Lobby
+    var intentionalQuit: Boolean = false
+        private set
+
     // replay=0: no stale events replayed to new subscribers (GameViewModel, LobbyViewModel)
     // extraBufferCapacity=8: events aren't dropped if collector is slow
     private val _roomEvents = MutableSharedFlow<RoomEvent>(replay = 0, extraBufferCapacity = 8)
@@ -142,13 +146,13 @@ class OnlineSessionManager @Inject constructor(
     }
 
     suspend fun createRoom(
-        localId   : String,   // stable ID from UserPreferences
+        localId   : String,
         localName : String,
         roomName  : String,
         boardSize : Int,
-        scope     : CoroutineScope,
     ) {
         lastSession = null
+        intentionalQuit = false
         resetRoomEvents()
 
         try {
@@ -158,7 +162,7 @@ class OnlineSessionManager @Inject constructor(
                 roomName  = roomName,
                 boardSize = boardSize,
             )
-            attachSessionObserver(persistentCode, localId, localName, boardSize, scope)
+            attachSessionObserver(persistentCode, localId, localName, boardSize)
         } catch (e: Exception) {
             _roomEvents.tryEmit(RoomEvent.Error(e.message ?: "Failed to create room"))
         }
@@ -169,11 +173,10 @@ class OnlineSessionManager @Inject constructor(
         localName : String,
         roomCode  : String,
         boardSize : Int,
-        scope     : CoroutineScope,
     ) {
         lastSession = null
         resetRoomEvents()
-        attachSessionObserver(roomCode, localId, localName, boardSize, scope)
+        attachSessionObserver(roomCode, localId, localName, boardSize)
     }
 
     /** Guest reconnects to a game already in PLAYING state (e.g. after app kill). */
@@ -182,7 +185,6 @@ class OnlineSessionManager @Inject constructor(
         localName : String,
         roomCode  : String,
         boardSize : Int,
-        scope     : CoroutineScope,
     ) {
         lastSession = null
         resetRoomEvents()
@@ -202,7 +204,7 @@ class OnlineSessionManager @Inject constructor(
         _joinedOpponentName.value  = hostName
         _lastKnownOpponentName.value = hostName
         // Start observing host moves
-        observeOpponent(roomCode, scope)
+        observeOpponent(roomCode)
         _roomEvents.tryEmit(RoomEvent.GameStarted)
     }
 
@@ -211,7 +213,6 @@ class OnlineSessionManager @Inject constructor(
         localId        : String,
         localName      : String,
         boardSize      : Int,
-        scope          : CoroutineScope,
     ) {
         session = OnlineSession(
             roomCode  = persistentCode,
@@ -244,7 +245,7 @@ class OnlineSessionManager @Inject constructor(
                         _lastKnownOpponentName.value = guestName
                         _roomEvents.tryEmit(RoomEvent.OpponentJoined(guestName))
                         _roomEvents.tryEmit(RoomEvent.GameStarted)
-                        observeOpponent(persistentCode, scope)
+                        observeOpponent(persistentCode)
                     }
                     "WAITING" -> {
                         // Host rejected or room reset — back to waiting
@@ -260,7 +261,6 @@ class OnlineSessionManager @Inject constructor(
         localId   : String,   // stable ID from UserPreferences
         roomCode  : String,
         localName : String,
-        scope     : CoroutineScope,
     ): Boolean {
         lastSession = null
         resetRoomEvents()
@@ -292,7 +292,7 @@ class OnlineSessionManager @Inject constructor(
                     .collect { status ->
                         when (status) {
                             "PLAYING" -> {
-                                observeOpponent(roomCode, scope)
+                                observeOpponent(roomCode)
                                 _roomEvents.tryEmit(RoomEvent.GameStarted)
                             }
                             "WAITING" -> {
@@ -315,7 +315,6 @@ class OnlineSessionManager @Inject constructor(
         localId   : String,
         roomCode  : String,
         localName : String,
-        scope     : CoroutineScope,
     ): Boolean {
         lastSession = null
         resetRoomEvents()
@@ -336,7 +335,7 @@ class OnlineSessionManager @Inject constructor(
             )
             _lastKnownOpponentName.value = room.host.name
             firebaseRepo.registerDisconnectHandler(roomCode, "guest")
-            observeOpponent(roomCode, scope)
+            observeOpponent(roomCode)
             _roomEvents.tryEmit(RoomEvent.GameStarted)
             true
         } catch (e: Exception) {
@@ -358,12 +357,12 @@ class OnlineSessionManager @Inject constructor(
     }
 
     /**
-     * Called by GameViewModel to restart opponent observation in the game's scope.
-     * The lobby scope may be cancelled by the time GameViewModel starts.
+     * Called by GameViewModel to restart opponent observation.
+     * Always uses managerScope so it survives ViewModel navigation.
      */
-    fun startObservingOpponent(scope: CoroutineScope) {
+    fun startObservingOpponent() {
         val s = session ?: return
-        observeOpponent(s.roomCode, scope)
+        observeOpponent(s.roomCode)
     }
 
     suspend fun markLocalFinished(finalScore: Int = 0, moveCount: Int = 0, isCompleted: Boolean = false) {
@@ -390,6 +389,7 @@ class OnlineSessionManager @Inject constructor(
     suspend fun endSession(deleteRoom: Boolean = true) {
         val s = session ?: return
         lastSession = s
+        if (!deleteRoom) intentionalQuit = true  // mid-game quit — suppress Lobby auto-reconnect
         // Cancel all active observers immediately
         roomStatusJob?.cancel()
         roomStatusJob = null
@@ -429,30 +429,50 @@ class OnlineSessionManager @Inject constructor(
         _opponentState.value = null
     }
 
-    private fun observeOpponent(roomCode: String, scope: CoroutineScope) {
+    private fun observeOpponent(roomCode: String) {
         // Cancel any previous opponent observer before starting new one
         opponentObserverJob?.cancel()
+        var prevState: PlayerStateDto? = null   // track previous to only fire on real changes
         opponentObserverJob = firebaseRepo.observeOpponent(roomCode, opponentRole())
             .onEach { state ->
                 // Ignore stale events if session has moved to a different room
                 if (session?.roomCode != roomCode) return@onEach
 
+                val prev = prevState
+                prevState = state
                 _opponentState.value = state
 
-                if (!state.isConnected) {
-                    _roomEvents.tryEmit(RoomEvent.OpponentDisconnected)
-                } else {
+                // Connection state changed
+                if (prev == null || state.isConnected != prev.isConnected) {
+                    if (!state.isConnected) {
+                        // Only fire disconnect if we've seen them connected first (prev != null)
+                        // AND they haven't already finished — a finished player setting
+                        // isConnected=false is normal endSession cleanup, NOT a real disconnect.
+                        // Check both current and previous finishedAt in case writes arrive together.
+                        if (prev != null && state.finishedAt == 0L && (prev.finishedAt == 0L)) {
+                            _roomEvents.tryEmit(RoomEvent.OpponentDisconnected)
+                        }
+                    } else if (prev != null) {
+                        // Was disconnected, now reconnected
+                        _roomEvents.tryEmit(RoomEvent.OpponentReconnected)
+                    }
+                }
+
+                // Move happened — only emit if moveCount actually increased
+                if (state.isConnected && state.moveCount > (prev?.moveCount ?: 0)) {
                     val history = state.moveHistory.map { it.toPosition() }
                     _roomEvents.tryEmit(RoomEvent.OpponentMoved(state.moveCount, history))
                 }
 
-                if (state.finishedAt > 0L) {
+                // Opponent finished — only emit once when finishedAt first becomes > 0
+                val prevFinished = (prev?.finishedAt ?: 0L) > 0L
+                if (!prevFinished && state.finishedAt > 0L && state.moveCount > 0) {
                     if (state.finalScore > 0) {
                         session = session?.copy(opponentFinalScore = state.finalScore)
                     }
                     _roomEvents.tryEmit(RoomEvent.OpponentFinished(state.isCompleted))
                 }
             }
-            .launchIn(scope)
+            .launchIn(managerScope)  // always use singleton scope — never caller's scope
     }
 }

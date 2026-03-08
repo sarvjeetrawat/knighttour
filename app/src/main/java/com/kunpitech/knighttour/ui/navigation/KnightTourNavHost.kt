@@ -132,8 +132,8 @@ fun KnightTourNavHost(
             GameRoute(
                 onNavigateBack = {
                     if (isOnline) {
-                        navController.navigate(Screen.Lobby.route) {
-                            popUpTo(Screen.Home.route)
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.Home.route) { inclusive = true }
                         }
                     } else {
                         navController.popBackStack()

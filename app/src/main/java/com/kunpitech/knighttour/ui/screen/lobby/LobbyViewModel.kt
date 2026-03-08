@@ -101,6 +101,10 @@ class LobbyViewModel @Inject constructor(
     private fun reconnectAsGuest() {
         viewModelScope.launch {
             try {
+                // Don't reconnect if the player just intentionally quit — they want to go home,
+                // not re-join the game they left. Firebase cleanup may still be in flight.
+                if (sessionManager.intentionalQuit) return@launch
+
                 val result = firebaseRepo.findRoomByGuest(playerId) ?: return@launch
                 val (roomCode, status) = result
 
@@ -129,7 +133,6 @@ class LobbyViewModel @Inject constructor(
                             localId   = playerId,
                             roomCode  = roomCode,
                             localName = _uiState.value.playerName,
-                            scope     = viewModelScope,
                         )
                     }
                     "PLAYING" -> {
@@ -139,7 +142,6 @@ class LobbyViewModel @Inject constructor(
                             localName = _uiState.value.playerName,
                             roomCode  = roomCode,
                             boardSize = room.boardSize,
-                            scope     = viewModelScope,
                         )
                     }
                 }
@@ -175,7 +177,6 @@ class LobbyViewModel @Inject constructor(
                         localName = playerName,
                         roomCode  = roomCode,
                         boardSize = room.boardSize,
-                        scope     = viewModelScope,
                     )
                     _uiState.update { it.copy(
                         roomCreated   = true,
@@ -216,7 +217,6 @@ class LobbyViewModel @Inject constructor(
                     localName = playerName,
                     roomCode  = roomCode,
                     boardSize = room.boardSize,
-                    scope     = viewModelScope,
                 )
                 _uiState.update { it.copy(
                     roomCreated   = true,
@@ -287,7 +287,6 @@ class LobbyViewModel @Inject constructor(
                     localName = playerName,
                     roomName  = roomName,
                     boardSize = boardSize,
-                    scope     = viewModelScope,
                 )
                 val roomCode = sessionManager.currentSession()?.roomCode ?: ""
                 // Show "Room Created" state — do NOT navigate to game yet
@@ -324,7 +323,6 @@ class LobbyViewModel @Inject constructor(
                     localId   = playerId,
                     roomCode  = cleaned,
                     localName = _uiState.value.playerName,
-                    scope     = viewModelScope,
                 )
                 if (joined) {
                     // RequestSent event will update UI
@@ -357,7 +355,6 @@ class LobbyViewModel @Inject constructor(
                         localName = playerName,
                         roomCode  = roomCode,
                         boardSize = room.boardSize,
-                        scope     = viewModelScope,
                     )
                 }
 

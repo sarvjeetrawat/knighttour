@@ -238,7 +238,6 @@ class HomeViewModel @Inject constructor(
                     localName = playerName,
                     roomCode  = roomCode,
                     boardSize = room.boardSize,
-                    scope     = viewModelScope,
                 )
                 // Set PLAYING — triggers guest's watcher to navigate too
                 firebaseRepo.acceptGuestJoin(roomCode)

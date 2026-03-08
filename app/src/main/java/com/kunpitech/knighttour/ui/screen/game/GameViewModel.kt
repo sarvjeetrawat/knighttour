@@ -161,7 +161,7 @@ class GameViewModel @Inject constructor(
                     isRematch          = false,
                 ) }
             }
-            sessionManager.startObservingOpponent(viewModelScope)
+            sessionManager.startObservingOpponent()
             observeOnlineOpponent()
             observeRoomEvents()
         }
@@ -191,10 +191,12 @@ class GameViewModel @Inject constructor(
 
     private fun newGame(difficulty: Difficulty, mode: GameMode, roomCode: String) {
         timerJob?.cancel()
+        disconnectTimeoutJob?.cancel()
+        disconnectTimeoutJob = null
         val s = startGame(difficulty, mode, roomCode)
         session = s
         _currentSessionId.value = s.id
-        _uiState.value = s.toUiState()
+        _uiState.value = s.toUiState().copy(opponentDisconnected = false)
         autoSave(s)
         startTimer()
     }
@@ -273,7 +275,18 @@ class GameViewModel @Inject constructor(
                             moveCount   = result.session.moveCount,
                             isCompleted = false,
                         )
-                        // Don't call endSession() yet — wait for OpponentFinished event
+                        // If opponent already finished before us (their finishedAt > 0 is in
+                        // opponentState), the OpponentFinished event already fired while we were
+                        // still PLAYING — it only showed a banner and didn't navigate.
+                        // We must check now and end the session immediately, otherwise we wait
+                        // forever for an event that will never fire again.
+                        val opponentAlreadyFinished =
+                            (sessionManager.opponentState.value?.finishedAt ?: 0L) > 0L
+                        if (opponentAlreadyFinished) {
+                            sessionManager.endSession()
+                            _uiState.update { it.copy(gameState = GamePhase.ONLINE_GAME_OVER) }
+                        }
+                        // Otherwise: wait for OpponentFinished event to arrive normally
                     }
                 }
                 // Offline: toUiState() already sets FAILED, nothing more needed
@@ -411,7 +424,15 @@ class GameViewModel @Inject constructor(
                                     moveCount   = tick.session.moveCount,
                                     isCompleted = false,
                                 )
-                                // Don't endSession — wait for OpponentFinished
+                                // Same as DeadEnd: if opponent already finished before us,
+                                // navigate immediately — don't wait for an event that won't come.
+                                val opponentAlreadyFinished =
+                                    (sessionManager.opponentState.value?.finishedAt ?: 0L) > 0L
+                                if (opponentAlreadyFinished) {
+                                    sessionManager.endSession()
+                                    _uiState.update { it.copy(gameState = GamePhase.ONLINE_GAME_OVER) }
+                                }
+                                // Otherwise: wait for OpponentFinished event
                             }
                         } else {
                             _uiState.update { it.copy(gameState = GamePhase.FAILED) }
@@ -607,6 +628,8 @@ class GameViewModel @Inject constructor(
 
     /** Call when leaving the game screen — cleans up Firebase room. */
     fun onLeaveOnlineGame() {
+        disconnectTimeoutJob?.cancel()
+        disconnectTimeoutJob = null
         if (_uiState.value.isOnlineMode) {
             val current = session
             viewModelScope.launch {
@@ -626,6 +649,8 @@ class GameViewModel @Inject constructor(
 
     /** Host/guest tapped QUIT during online game — end session cleanly then navigate back. */
     private fun handleQuitOnline() {
+        disconnectTimeoutJob?.cancel()
+        disconnectTimeoutJob = null
         if (!_uiState.value.isOnlineMode) {
             _navigateBack.value = true
             return

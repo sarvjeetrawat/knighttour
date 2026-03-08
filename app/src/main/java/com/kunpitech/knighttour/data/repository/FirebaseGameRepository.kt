@@ -192,8 +192,13 @@ class FirebaseGameRepository @Inject constructor() {
             "guest" to mapOf("finalScore" to 0, "name" to guestName,        "isCompleted" to false),
         )).await()
 
-        // Clear any stale rematch signals
-        db.getReference("rematch/$roomCode").removeValue().await()
+        // Clear stale rematch SIGNALS (host/guest timestamps) so they don't trigger a
+        // false rematch next round. We clear only the player signals, NOT roomReady —
+        // roomReady is written AFTER this call by signalRoomReady() and must survive.
+        try {
+            db.getReference("rematch/$roomCode/host").removeValue().await()
+            db.getReference("rematch/$roomCode/guest").removeValue().await()
+        } catch (_: Exception) {}
     }
 
     /**
@@ -234,11 +239,24 @@ class FirebaseGameRepository @Inject constructor() {
         val snapshot = roomRef(roomCode).get().await()
         if (!snapshot.exists()) return null
 
+        // Clear ALL stale game data from previous game before starting new one
         roomRef(roomCode).updateChildren(mapOf(
-            "guestId"           to guestId,
-            "status"            to "PLAYING",
-            "guest/name"        to guestName,
-            "guest/isConnected" to true,
+            "guestId"             to guestId,
+            "status"              to "PLAYING",
+            "guest/name"          to guestName,
+            "guest/isConnected"   to true,
+            "guest/moveCount"     to 0,
+            "guest/finishedAt"    to 0L,
+            "guest/finalScore"    to 0,
+            "guest/isCompleted"   to false,
+            "guest/lastMove"      to null,
+            "guest/moveHistory"   to null,
+            "host/moveCount"      to 0,
+            "host/finishedAt"     to 0L,
+            "host/finalScore"     to 0,
+            "host/isCompleted"    to false,
+            "host/lastMove"       to null,
+            "host/moveHistory"    to null,
         )).await()
 
         db.getReference("matchResults/$roomCode/guest/name").setValue(guestName).await()
@@ -267,10 +285,6 @@ class FirebaseGameRepository @Inject constructor() {
         } catch (_: Exception) {}
     }
 
-    /** Host accepts — set PLAYING so both sides navigate to game. */
-    suspend fun acceptGuestJoin(roomCode: String) {
-        roomRef(roomCode).child("status").setValue("PLAYING").await()
-    }
 
     /** Host rejects — reset room to WAITING and clear guest. */
     suspend fun rejectGuestJoin(roomCode: String, hostId: String, hostName: String, boardSize: Int) {
@@ -283,6 +297,24 @@ class FirebaseGameRepository @Inject constructor() {
         )
     }
 
+    /** Host accepts — set status to PLAYING so both sides navigate to game. */
+    suspend fun acceptGuestJoin(roomCode: String) {
+        roomRef(roomCode).updateChildren(mapOf(
+            "status"            to "PLAYING",
+            "host/moveCount"    to 0,
+            "host/finishedAt"   to 0L,
+            "host/finalScore"   to 0,
+            "host/isCompleted"  to false,
+            "host/lastMove"     to null,
+            "host/moveHistory"  to null,
+            "guest/moveCount"   to 0,
+            "guest/finishedAt"  to 0L,
+            "guest/finalScore"  to 0,
+            "guest/isCompleted" to false,
+            "guest/lastMove"    to null,
+            "guest/moveHistory" to null,
+        )).await()
+    }
 
     /** Host declines — reset room to WAITING and clear guest data. */
     suspend fun declineGuestJoin(roomCode: String, hostId: String, hostName: String, boardSize: Int) {
@@ -475,12 +507,8 @@ class FirebaseGameRepository @Inject constructor() {
 
     /** Signal this player wants a rematch. */
     suspend fun signalRematch(roomCode: String, role: String) {
-        db.getReference("rematch/$roomCode/$role").setValue("READY").await()
-    }
-
-    /** Clear only this player's own signal — does NOT touch opponent's signal. */
-    suspend fun clearMyRematchSignal(roomCode: String, role: String) {
-        try { db.getReference("rematch/$roomCode/$role").removeValue().await() } catch (_: Exception) {}
+        // Write current timestamp — lets observeRematch verify both signals are fresh/new
+        db.getReference("rematch/$roomCode/$role").setValue(System.currentTimeMillis()).await()
     }
 
     /** Host calls this after resetting the room — signals guest it's safe to join. */
@@ -505,14 +533,21 @@ class FirebaseGameRepository @Inject constructor() {
         awaitClose { ref.removeEventListener(listener) }
     }
 
-    /** Observe rematch node — emits when both players have signalled READY. */
-    fun observeRematch(roomCode: String): Flow<Unit> = callbackFlow {
+    /**
+     * Observe rematch node — emits when both players have signalled (non-zero timestamps).
+     * Stale signals from previous games are cleared by clearRematchSignal() on ResultViewModel
+     * init, so we don't need timestamp comparisons here — they caused bugs when guest
+     * tapped Play Again before host (guest signal was "too old" relative to host's roundStartedAt).
+     */
+    fun observeRematch(roomCode: String, afterTimestamp: Long): Flow<Unit> = callbackFlow {
         val ref = db.getReference("rematch/$roomCode")
         val listener = object : ValueEventListener {
             override fun onDataChange(snap: DataSnapshot) {
-                val hostReady  = snap.child("host").getValue(String::class.java).orEmpty()
-                val guestReady = snap.child("guest").getValue(String::class.java).orEmpty()
-                if (hostReady == "READY" && guestReady == "READY") {
+                val hostTs  = snap.child("host").getValue(Long::class.java)  ?: 0L
+                val guestTs = snap.child("guest").getValue(Long::class.java) ?: 0L
+                // Both must have signalled (non-zero) — timestamp comparison removed because
+                // it fails when guest taps Play Again before host (guestTs < afterTimestamp).
+                if (hostTs > 0L && guestTs > 0L) {
                     trySend(Unit)
                 }
             }
@@ -525,6 +560,10 @@ class FirebaseGameRepository @Inject constructor() {
     /** Clean up rematch node after both navigate away. */
     suspend fun clearRematch(roomCode: String) {
         try { db.getReference("rematch/$roomCode").removeValue().await() } catch (_: Exception) {}
+    }
+
+    suspend fun clearRematchSignal(roomCode: String, role: String) {
+        try { db.getReference("rematch/$roomCode/$role").removeValue().await() } catch (_: Exception) {}
     }
 
     /** Check if a room code exists and is joinable. */
@@ -773,8 +812,7 @@ class FirebaseGameRepository @Inject constructor() {
     /**
      * Get or reset a player's persistent room.
      */
-   /* Used by leaderboard to find opponent scores.
-    */
+
     suspend fun getRoomsForPlayer(playerName: String): List<RoomDto> {
         return try {
             val snap = db.getReference("rooms").get().await()
