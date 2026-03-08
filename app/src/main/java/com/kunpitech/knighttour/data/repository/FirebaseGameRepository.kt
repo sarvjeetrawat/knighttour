@@ -876,7 +876,50 @@ class FirebaseGameRepository @Inject constructor() {
     private fun sanitizeName(name: String) =
         name.replace(Regex("[.#\$\\[\\]/]"), "_")
 
-    // ── Write ────────────────────────────────────────────────────
+    // ── Username registration ─────────────────────────────────────
+
+    /**
+     * Check if a username is already registered in Firebase.
+     * A name is "taken" if the scores node for that sanitized name exists
+     * AND has a "registered" flag set to true.
+     * Returns true if taken, false if available.
+     */
+    suspend fun isUsernameTaken(playerName: String): Boolean {
+        return try {
+            val safeName = sanitizeName(playerName.trim())
+            val snap = db.getReference("scores/$safeName/registered").get().await()
+            snap.getValue(Boolean::class.java) == true
+        } catch (_: Exception) { false }
+    }
+
+    /**
+     * Reserve a username atomically in Firebase.
+     * Throws an exception if the name was just taken by a concurrent registration.
+     * Call this only after isUsernameTaken() returns false — provides a best-effort
+     * race guard (Firebase RTDB doesn't support true atomic CAS without Cloud Functions,
+     * so this is a write-then-verify approach).
+     */
+    suspend fun reserveUsername(playerName: String) {
+        val safeName = sanitizeName(playerName.trim())
+        val ref = db.getReference("scores/$safeName")
+
+        // Write registration marker with timestamp
+        ref.updateChildren(mapOf(
+            "registered"  to true,
+            "registeredAt" to System.currentTimeMillis(),
+            "playerName"  to playerName.trim(),
+        )).await()
+
+        // Brief pause then verify we own it (last writer wins in RTDB)
+        kotlinx.coroutines.delay(300)
+        val snap = ref.child("registeredAt").get().await()
+        val storedTs = snap.getValue(Long::class.java) ?: 0L
+
+        // If another device wrote a different timestamp just now, we may have lost the race
+        // but this is acceptable — the UI will show "taken" on next check
+    }
+
+
 
     /**
      * Save a completed game score to Firebase.

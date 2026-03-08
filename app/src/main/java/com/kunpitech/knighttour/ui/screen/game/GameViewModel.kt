@@ -110,6 +110,7 @@ class GameViewModel @Inject constructor(
                         boardTheme      = prefs.boardTheme.name,
                         showMoveNumbers = prefs.showMoveNumbers,
                         showValidMoves  = prefs.showValidMoves,
+                        hapticsEnabled  = prefs.hapticsEnabled,
                     )
                 }
             }
@@ -738,6 +739,7 @@ class GameViewModel @Inject constructor(
             boardTheme       = _uiState.value.boardTheme,
             showMoveNumbers  = _uiState.value.showMoveNumbers,
             showValidMoves   = _uiState.value.showValidMoves,
+            hapticsEnabled   = _uiState.value.hapticsEnabled,
         )
     }
 }

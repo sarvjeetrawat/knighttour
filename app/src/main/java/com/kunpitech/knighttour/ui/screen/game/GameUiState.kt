@@ -57,6 +57,7 @@ data class GameUiState(
     val boardTheme       : String          = "OBSIDIAN",  // matches BoardTheme.name
     val showMoveNumbers  : Boolean         = true,
     val showValidMoves   : Boolean         = true,
+    val hapticsEnabled   : Boolean         = true,
 )
 
 enum class GamePhase { PLAYING, PAUSED, COMPLETED, FAILED, OPPONENT_FINISHED, WAITING_FOR_OPPONENT, ONLINE_GAME_OVER }

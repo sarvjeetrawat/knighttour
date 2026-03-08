@@ -207,7 +207,9 @@ fun GameScreen(
                     glowPulse    = glowPulse,
                     validPulse   = validPulse,
                     onCellTap    = { r, c ->
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (uiState.hapticsEnabled) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
                         onEvent(GameEvent.CellTapped(r, c))
                     },
                     modifier     = Modifier.size(boardSize),
@@ -758,7 +760,7 @@ private fun BoardCell(
         cell.isKnight    -> colors.cellKnight
         cell.isVisited   -> colors.cellVisited
         cell.isHint      -> colors.cellHint
-        cell.isValidMove -> colors.cellValid.copy(
+        cell.isValidMove && showValidMoves -> colors.cellValid.copy(
             alpha = colors.cellValid.alpha.coerceAtLeast(0.05f) * validPulse
         )
         isLightCell      -> colors.cellLight
@@ -769,7 +771,7 @@ private fun BoardCell(
         cell.isHint      -> Modifier.border(
             BorderWidth.thin, colors.accentColor.copy(alpha = 0.65f), CellShape
         )
-        cell.isValidMove -> Modifier.border(
+        cell.isValidMove && showValidMoves -> Modifier.border(
             BorderWidth.thin, colors.cellValid.copy(alpha = 0.55f * validPulse), CellShape
         )
         else -> Modifier

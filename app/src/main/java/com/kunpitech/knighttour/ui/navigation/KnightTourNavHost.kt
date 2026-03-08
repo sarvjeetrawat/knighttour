@@ -10,6 +10,7 @@ import androidx.navigation.navArgument
 import com.kunpitech.knighttour.ui.screen.game.GameRoute
 import com.kunpitech.knighttour.ui.screen.home.HomeRoute
 import com.kunpitech.knighttour.ui.screen.leaderboard.LeaderboardRoute
+import com.kunpitech.knighttour.ui.screen.onboarding.OnboardingRoute
 import com.kunpitech.knighttour.ui.screen.result.ResultRoute
 import com.kunpitech.knighttour.ui.screen.settings.SettingsRoute
 import com.kunpitech.knighttour.ui.screen.splash.SplashRoute
@@ -20,6 +21,7 @@ import com.kunpitech.knighttour.ui.screen.splash.SplashRoute
 
 sealed class Screen(val route: String) {
     data object Splash      : Screen("splash")
+    data object Onboarding  : Screen("onboarding")
     data object Home        : Screen("home")
 
     // Game — optional sessionId for resume; optional difficulty/mode for new game
@@ -57,9 +59,25 @@ fun KnightTourNavHost(
         // ── SPLASH ───────────────────────────────────────────────
         composable(Screen.Splash.route) {
             SplashRoute(
-                onSplashComplete = {
+                onNavigateHome = {
                     navController.navigate(Screen.Home.route) {
                         popUpTo(Screen.Splash.route) { inclusive = true }
+                    }
+                },
+                onNavigateOnboarding = {
+                    navController.navigate(Screen.Onboarding.route) {
+                        popUpTo(Screen.Splash.route) { inclusive = true }
+                    }
+                },
+            )
+        }
+
+        // ── ONBOARDING ───────────────────────────────────────────
+        composable(Screen.Onboarding.route) {
+            OnboardingRoute(
+                onComplete = {
+                    navController.navigate(Screen.Home.route) {
+                        popUpTo(Screen.Onboarding.route) { inclusive = true }
                     }
                 }
             )
@@ -204,6 +222,11 @@ fun KnightTourNavHost(
         composable(Screen.Settings.route) {
             SettingsRoute(
                 onNavigateBack = { navController.popBackStack() },
+                onNavigateOnboarding = {
+                    navController.navigate(Screen.Onboarding.route) {
+                        popUpTo(Screen.Home.route) { inclusive = true }
+                    }
+                },
             )
         }
     }

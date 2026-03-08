@@ -213,13 +213,13 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(24.dp))
 
-            // Sound & Haptics
+            // Haptics (Sound Effects and Background Music hidden until audio assets are added)
             SettingsSection(
-                title    = "SOUND & HAPTICS",
+                title    = "HAPTICS",
                 icon     = "\uD83D\uDD0A",
                 modifier = Modifier.alpha(section1Alpha.value),
             ) {
-                ToggleRow(
+               /* ToggleRow(
                     label       = "Sound Effects",
                     description = "Board taps, moves, victory",
                     checked     = uiState.soundEnabled,
@@ -232,7 +232,7 @@ fun SettingsScreen(
                     checked     = uiState.musicEnabled,
                     onToggle    = { onEvent(SettingsEvent.MusicToggled(it)) },
                 )
-                SectionDivider()
+                SectionDivider()*/
                 ToggleRow(
                     label       = "Haptic Feedback",
                     description = "Vibration on moves and events",
@@ -980,10 +980,19 @@ private fun SettingsIconBtn(icon: String, onClick: () -> Unit) {
 
 @Composable
 fun SettingsRoute(
-    onNavigateBack : () -> Unit,
-    viewModel      : SettingsViewModel = hiltViewModel(),
+    onNavigateBack       : () -> Unit,
+    onNavigateOnboarding : () -> Unit,
+    viewModel            : SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val navigateToOnboarding by viewModel.navigateToOnboarding.collectAsStateWithLifecycle()
+
+    LaunchedEffect(navigateToOnboarding) {
+        if (navigateToOnboarding) {
+            viewModel.onNavigationHandled()
+            onNavigateOnboarding()
+        }
+    }
 
     SettingsScreen(
         uiState        = uiState,

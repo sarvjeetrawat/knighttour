@@ -2,6 +2,7 @@ package com.kunpitech.knighttour.ui.screen.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kunpitech.knighttour.data.online.OnlineSessionManager
 import com.kunpitech.knighttour.data.repository.GameRepository
 import com.kunpitech.knighttour.data.repository.ScoreRepository
 import com.kunpitech.knighttour.data.repository.UserPreferencesRepository
@@ -22,14 +23,21 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val prefsRepository : UserPreferencesRepository,
-    private val gameRepository  : GameRepository,
-    private val scoreRepository : ScoreRepository,
+    private val prefsRepository  : UserPreferencesRepository,
+    private val gameRepository   : GameRepository,
+    private val scoreRepository  : ScoreRepository,
+    private val sessionManager   : OnlineSessionManager,
 ) : ViewModel() {
 
     private val _uiState: MutableStateFlow<SettingsUiState> =
         MutableStateFlow(SettingsUiState(isLoading = true))
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+
+    // Fired after sign-out completes — NavGraph navigates to Onboarding
+    private val _navigateToOnboarding = MutableStateFlow(false)
+    val navigateToOnboarding: StateFlow<Boolean> = _navigateToOnboarding.asStateFlow()
+
+    fun onNavigationHandled() { _navigateToOnboarding.value = false }
 
     init {
         // Observe DataStore and push updates to UI state
@@ -110,7 +118,16 @@ class SettingsViewModel @Inject constructor(
 
     private fun handleSignOut() {
         viewModelScope.launch {
-            prefsRepository.setSignedIn(false)
+            // 1. Cleanly disconnect from any active online room
+            try { sessionManager.endSession(deleteRoom = false) } catch (_: Exception) {}
+
+            // 2. Clear all local game data and preferences
+            try { gameRepository.clearAll() } catch (_: Exception) {}
+            try { scoreRepository.clearAll() } catch (_: Exception) {}
+            prefsRepository.clearAll()
+
+            // 3. Navigate to Onboarding so user picks a new username
+            _navigateToOnboarding.value = true
         }
     }
 
